@@ -2,11 +2,13 @@
 #
 # Claude Code Hooks Installer
 # ============================
-# Installs Ralph-style autonomous hooks to any project.
+# Installs the Ralph-style autonomous hooks system to any project.
 #
 # Usage:
 #   curl -sL https://raw.githubusercontent.com/norvinteo/claude-code-hooks/main/install.sh | bash -s /path/to/project
-#   curl -sL https://raw.githubusercontent.com/norvinteo/claude-code-hooks/main/install.sh | bash -s .
+#
+# Or:
+#   ./install.sh /path/to/your/project
 #
 
 set -e
@@ -16,49 +18,51 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-# GitHub raw URL base
+# GitHub repository
 GITHUB_RAW="https://raw.githubusercontent.com/norvinteo/claude-code-hooks/main"
 
 # Target project
-TARGET_PROJECT="${1:-.}"
+TARGET_PROJECT="${1:-$(pwd)}"
 
-echo -e "${BLUE}======================================================${NC}"
-echo -e "${BLUE}           Claude Code Hooks Installer                ${NC}"
-echo -e "${BLUE}======================================================${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}           Claude Code Hooks Installer                          ${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
-# Validate and resolve target
+# Validate target
 if [ ! -d "$TARGET_PROJECT" ]; then
-    echo -e "${YELLOW}Creating directory: $TARGET_PROJECT${NC}"
+    echo -e "${YELLOW}Creating target directory: $TARGET_PROJECT${NC}"
     mkdir -p "$TARGET_PROJECT"
 fi
 
 TARGET_PROJECT="$(cd "$TARGET_PROJECT" && pwd)"
 TARGET_HOOKS="$TARGET_PROJECT/.claude/hooks"
+TARGET_SETTINGS="$TARGET_PROJECT/.claude/settings.json"
 
-echo -e "${YELLOW}Installing to:${NC} $TARGET_PROJECT"
+echo -e "${YELLOW}Target:${NC} $TARGET_PROJECT"
 echo ""
 
-# Create directories
+# Create target directories
 echo -e "${GREEN}Creating directories...${NC}"
 mkdir -p "$TARGET_HOOKS"
 mkdir -p "$TARGET_HOOKS/archive"
+mkdir -p "$TARGET_PROJECT/.claude/plans"
 mkdir -p "$TARGET_PROJECT/progress"
 
-# Hook files to download
+# List of hook files to download
 HOOK_FILES=(
     "plan_initializer.py"
-    "continuation_enforcer.py"
-    "inject_plan_context.py"
-    "todo_sync.py"
     "plan_tracker.py"
-    "task_monitor.py"
-    "cost_tracker.py"
+    "todo_sync.py"
+    "inject_plan_context.py"
     "stop_verifier.py"
     "completion_validator.py"
     "session_cleanup.py"
+    "continuation_enforcer.py"
+    "cost_tracker.py"
+    "task_monitor.py"
     "agent_complete_notify.py"
     "auto_continue.sh"
 )
@@ -66,35 +70,75 @@ HOOK_FILES=(
 # Download hook files
 echo -e "${GREEN}Downloading hook files...${NC}"
 for file in "${HOOK_FILES[@]}"; do
-    echo -n "  Downloading $file... "
-    if curl -sL "$GITHUB_RAW/hooks/$file" -o "$TARGET_HOOKS/$file" 2>/dev/null; then
-        # Replace placeholder with actual project path
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "s|{{PROJECT_DIR}}|$TARGET_PROJECT|g" "$TARGET_HOOKS/$file"
-        else
-            sed -i "s|{{PROJECT_DIR}}|$TARGET_PROJECT|g" "$TARGET_HOOKS/$file"
-        fi
+    if curl -sfL "$GITHUB_RAW/hooks/$file" -o "$TARGET_HOOKS/$file"; then
         chmod +x "$TARGET_HOOKS/$file"
-        echo -e "${GREEN}OK${NC}"
+        echo "  ✓ $file"
     else
-        echo -e "${RED}FAILED${NC}"
+        echo -e "  ${YELLOW}⚠ $file not found, skipping${NC}"
     fi
 done
 
-# Download config files
-echo -e "${GREEN}Downloading config files...${NC}"
-for file in "config.json" "plan_state.json"; do
-    echo -n "  Downloading $file... "
-    if curl -sL "$GITHUB_RAW/config/$file" -o "$TARGET_HOOKS/$file" 2>/dev/null; then
-        echo -e "${GREEN}OK${NC}"
-    else
-        echo -e "${RED}FAILED${NC}"
-    fi
-done
+# Create config.json
+echo -e "${GREEN}Creating config.json...${NC}"
+cat > "$TARGET_HOOKS/config.json" << 'EOF'
+{
+  "plan_verification": true,
+  "auto_code_review": true,
+  "cost_tracking": true,
+  "max_session_cost": 10.00,
+  "cost_warning_threshold": 0.8,
+  "max_stop_attempts": 5,
+  "archive_old_plans": true,
+  "notifications": {
+    "mac": true,
+    "terminal_bell": true,
+    "slack": false,
+    "discord": false,
+    "telegram": false,
+    "pushover": false
+  },
+  "validation_commands": [
+    {
+      "name": "TypeScript Check",
+      "command": "npm run tsc --noEmit || bun run tsc --noEmit || yarn tsc --noEmit",
+      "timeout": 120,
+      "required": true
+    },
+    {
+      "name": "Lint",
+      "command": "npm run lint || bun run lint || yarn lint",
+      "timeout": 60,
+      "required": false
+    },
+    {
+      "name": "Build",
+      "command": "npm run build || bun run build || yarn build",
+      "timeout": 300,
+      "required": true
+    }
+  ]
+}
+EOF
+echo "  ✓ config.json"
+
+# Create empty plan_state.json
+echo -e "${GREEN}Creating plan_state.json...${NC}"
+cat > "$TARGET_HOOKS/plan_state.json" << 'EOF'
+{
+  "session_id": null,
+  "plan_source": null,
+  "plan_file": null,
+  "name": null,
+  "items": [],
+  "created_at": null,
+  "updated_at": null
+}
+EOF
+echo "  ✓ plan_state.json"
 
 # Create settings.json
 echo -e "${GREEN}Creating settings.json...${NC}"
-cat > "$TARGET_PROJECT/.claude/settings.json" << EOF
+cat > "$TARGET_SETTINGS" << EOF
 {
   "hooks": {
     "UserPromptSubmit": [
@@ -192,6 +236,7 @@ cat > "$TARGET_PROJECT/.claude/settings.json" << EOF
     ],
     "SubagentStop": [
       {
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -203,12 +248,37 @@ cat > "$TARGET_PROJECT/.claude/settings.json" << EOF
   }
 }
 EOF
-echo "  OK"
+echo "  ✓ settings.json"
+
+# Verify installation
+echo ""
+echo -e "${GREEN}Verifying installation...${NC}"
+ERRORS=0
+for file in "${HOOK_FILES[@]}"; do
+    if [[ "$file" == *.py ]]; then
+        if [ -f "$TARGET_HOOKS/$file" ]; then
+            if python3 -m py_compile "$TARGET_HOOKS/$file" 2>/dev/null; then
+                echo "  ✓ $file"
+            else
+                echo -e "  ${RED}✗ $file (syntax error)${NC}"
+                ERRORS=$((ERRORS + 1))
+            fi
+        fi
+    elif [[ "$file" == *.sh ]]; then
+        if [ -f "$TARGET_HOOKS/$file" ]; then
+            echo "  ✓ $file"
+        fi
+    fi
+done
 
 echo ""
-echo -e "${BLUE}======================================================${NC}"
-echo -e "${GREEN}Installation complete!${NC}"
-echo -e "${BLUE}======================================================${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+if [ $ERRORS -eq 0 ]; then
+    echo -e "${GREEN}Installation complete! ✅${NC}"
+else
+    echo -e "${YELLOW}Installation complete with $ERRORS errors${NC}"
+fi
+echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 echo "Files installed to: $TARGET_HOOKS"
 echo ""
@@ -217,12 +287,11 @@ echo "  /plan <task name>     - Start a new plan"
 echo "  /showplan             - Show current plan status"
 echo "  /clearplan            - Clear the plan"
 echo ""
-echo -e "${YELLOW}Autonomous Mode (tmux):${NC}"
-echo "  1. Start Claude in tmux:  tmux new -s claude"
-echo "  2. In another terminal:   $TARGET_HOOKS/auto_continue.sh claude"
-echo "  The script auto-sends 'c' when stop is blocked by incomplete tasks."
-echo ""
 echo "Configuration: $TARGET_HOOKS/config.json"
+echo ""
+echo -e "${YELLOW}Autonomous Operation (optional):${NC}"
+echo "  1. Start Claude in tmux: tmux new -s claude"
+echo "  2. In another terminal: $TARGET_HOOKS/auto_continue.sh claude"
 echo ""
 echo -e "${YELLOW}Optional: Set environment variables for notifications:${NC}"
 echo "  export SLACK_WEBHOOK_URL='https://hooks.slack.com/...'"
