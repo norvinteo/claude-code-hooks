@@ -6,11 +6,10 @@ Triggers on: Stop event
 Purpose: Check plan_state.json for incomplete items and BLOCK stop until done.
 
 Behavior:
-- Only counts ACTIONABLE items (skips templates, categories, reference items)
-- If actionable items incomplete -> BLOCK stop (continue=False)
-- If all actionable items complete -> Allow stop
-- If user uses /force-stop -> Allow stop anyway
-- If no plan -> Allow stop
+- If plan has incomplete items → BLOCK stop (continue=False)
+- If all items complete → Allow stop
+- If user uses /force-stop → Allow stop anyway
+- If no plan → Allow stop
 """
 
 import json
@@ -20,16 +19,28 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-HOOKS_DIR = Path("{{PROJECT_DIR}}/.claude/hooks")
-PLAN_STATE_FILE = HOOKS_DIR / "plan_state.json"
-STOP_ATTEMPTS_FILE = HOOKS_DIR / "stop_attempts.json"
-DEBUG_LOG = Path("{{PROJECT_DIR}}/progress/.stop_verifier_debug.log")
-VERIFICATION_LOG = Path("{{PROJECT_DIR}}/progress/plan_verifications.log")
+# Configuration
+HOOKS_DIR = Path(__file__).parent
+DEBUG_LOG = HOOKS_DIR.parent / "progress/.stop_verifier_debug.log"
+VERIFICATION_LOG = HOOKS_DIR.parent / "progress/plan_verifications.log"
 
+# Loop prevention settings (can be overridden in config.json)
 DEFAULT_MAX_STOP_ATTEMPTS = 5
 
 
+def get_session_files(session_id: str) -> tuple:
+    """Get session-scoped file paths."""
+    sessions_dir = HOOKS_DIR / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    plan_state_file = sessions_dir / f"{session_id}_plan_state.json"
+    stop_attempts_file = sessions_dir / f"{session_id}_stop_attempts.json"
+
+    return plan_state_file, stop_attempts_file
+
+
 def log_debug(message: str):
+    """Log debug message to file."""
     try:
         DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(DEBUG_LOG, "a") as f:
@@ -39,6 +50,7 @@ def log_debug(message: str):
 
 
 def log_verification(message: str):
+    """Log verification results."""
     try:
         VERIFICATION_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(VERIFICATION_LOG, "a") as f:
@@ -48,6 +60,7 @@ def log_verification(message: str):
 
 
 def load_config() -> dict:
+    """Load config from file."""
     config_file = HOOKS_DIR / "config.json"
     try:
         if config_file.exists():
@@ -58,48 +71,46 @@ def load_config() -> dict:
     return {}
 
 
-def get_stop_attempts(session_id: str) -> int:
+def get_stop_attempts(stop_attempts_file: Path) -> int:
+    """Track how many times stop was blocked this session."""
     try:
-        if STOP_ATTEMPTS_FILE.exists():
-            data = json.loads(STOP_ATTEMPTS_FILE.read_text())
-            return data.get(session_id, 0)
+        if stop_attempts_file.exists():
+            data = json.loads(stop_attempts_file.read_text())
+            return data.get("attempts", 0)
     except Exception:
         pass
     return 0
 
 
-def increment_stop_attempts(session_id: str) -> int:
-    count = get_stop_attempts(session_id) + 1
+def increment_stop_attempts(stop_attempts_file: Path) -> int:
+    """Increment and return new count."""
+    count = get_stop_attempts(stop_attempts_file) + 1
     try:
-        data = {}
-        if STOP_ATTEMPTS_FILE.exists():
-            try:
-                data = json.loads(STOP_ATTEMPTS_FILE.read_text())
-            except Exception:
-                data = {}
-        data[session_id] = count
-        data["_last_updated"] = datetime.now().isoformat()
-        STOP_ATTEMPTS_FILE.write_text(json.dumps(data, indent=2))
+        stop_attempts_file.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "attempts": count,
+            "_last_updated": datetime.now().isoformat()
+        }
+        stop_attempts_file.write_text(json.dumps(data, indent=2))
     except Exception as e:
         log_debug(f"Error updating stop attempts: {e}")
     return count
 
 
-def clear_stop_attempts(session_id: str):
+def clear_stop_attempts(stop_attempts_file: Path):
+    """Clear stop attempts for a session (called on successful stop)."""
     try:
-        if STOP_ATTEMPTS_FILE.exists():
-            data = json.loads(STOP_ATTEMPTS_FILE.read_text())
-            if session_id in data:
-                del data[session_id]
-                STOP_ATTEMPTS_FILE.write_text(json.dumps(data, indent=2))
+        if stop_attempts_file.exists():
+            stop_attempts_file.unlink()
     except Exception:
         pass
 
 
-def load_plan_state() -> dict:
+def load_plan_state(plan_state_file: Path) -> dict:
+    """Load plan state from file."""
     try:
-        if PLAN_STATE_FILE.exists():
-            with open(PLAN_STATE_FILE, "r") as f:
+        if plan_state_file.exists():
+            with open(plan_state_file, "r") as f:
                 return json.load(f)
     except Exception as e:
         log_debug(f"Error loading plan state: {e}")
@@ -107,6 +118,7 @@ def load_plan_state() -> dict:
 
 
 def check_force_stop(transcript_path: str) -> bool:
+    """Check if user explicitly requested force stop."""
     if not transcript_path or not Path(transcript_path).exists():
         return False
 
@@ -114,6 +126,7 @@ def check_force_stop(transcript_path: str) -> bool:
         with open(transcript_path, "r") as f:
             content = f.read()
 
+        # Check for force stop signals in recent messages (last 5000 chars)
         recent_content = content[-5000:] if len(content) > 5000 else content
 
         force_patterns = [
@@ -169,14 +182,20 @@ def get_incomplete_items(plan_state: dict) -> list:
 
 
 def output_hook_response(continue_execution: bool = True, system_message: str = None):
-    response = {"continue": continue_execution}
+    """Output JSON response for hook system."""
+    response = {
+        "continue": continue_execution
+    }
     if system_message:
         response["systemMessage"] = system_message
+
     print(json.dumps(response))
 
 
 def main():
+    """Main entry point for the hook."""
     try:
+        # Check if plan verification is enabled (config file OR env var)
         config = load_config()
         env_enabled = os.environ.get("CLAUDE_PLAN_VERIFICATION", "").lower() == "true"
         config_enabled = config.get("plan_verification", False)
@@ -186,34 +205,41 @@ def main():
             output_hook_response(True)
             sys.exit(0)
 
+        # Read JSON input from stdin
         data = json.load(sys.stdin)
 
         log_debug(f"Stop hook triggered with data: {json.dumps(data, indent=2)[:500]}")
 
-        session_id = data.get("session_id", "")
+        session_id = data.get("session_id", "default")
         transcript_path = data.get("transcript_path", "")
 
+        # Get session-scoped file paths
+        plan_state_file, stop_attempts_file = get_session_files(session_id)
+
+        # Check for force stop first
         if check_force_stop(transcript_path):
             log_debug("Force stop requested, allowing stop")
             log_verification(f"Session {session_id}: Force stop - bypassing verification")
-            clear_stop_attempts(session_id)
+            clear_stop_attempts(stop_attempts_file)
             output_hook_response(True, "Force stop acknowledged. Stopping with incomplete items.")
             sys.exit(0)
 
+        # Loop prevention: check stop attempts
         max_stop_attempts = config.get("max_stop_attempts", DEFAULT_MAX_STOP_ATTEMPTS)
-        attempts = increment_stop_attempts(session_id)
+        attempts = increment_stop_attempts(stop_attempts_file)
         if attempts >= max_stop_attempts:
             log_debug(f"Max stop attempts ({max_stop_attempts}) reached, allowing stop")
             log_verification(f"Session {session_id}: Loop prevention - allowed after {attempts} blocked attempts")
-            clear_stop_attempts(session_id)
-            output_hook_response(True, f"Allowed stop after {attempts} blocked attempts to prevent infinite loop.")
+            clear_stop_attempts(stop_attempts_file)
+            output_hook_response(True, f"⚠️ Allowed stop after {attempts} blocked attempts to prevent infinite loop.")
             sys.exit(0)
 
-        plan_state = load_plan_state()
+        # Load plan state
+        plan_state = load_plan_state(plan_state_file)
 
         if not plan_state or not plan_state.get("items"):
             log_debug("No plan state found, allowing stop")
-            clear_stop_attempts(session_id)
+            clear_stop_attempts(stop_attempts_file)
             output_hook_response(True)
             sys.exit(0)
 
@@ -233,36 +259,41 @@ def main():
         if not incomplete_items:
             log_debug("All items completed!")
             log_verification(f"Session {session_id}: All {total_items} plan items completed")
-            clear_stop_attempts(session_id)
-            output_hook_response(True, f"All {total_items} plan items completed!")
+            clear_stop_attempts(stop_attempts_file)
+            output_hook_response(True, f"✅ All {total_items} plan items completed!")
             sys.exit(0)
 
+        # Items are incomplete - BLOCK the stop
         log_debug(f"Found {len(incomplete_items)} incomplete items - BLOCKING stop")
         log_verification(f"Session {session_id}: BLOCKED - {len(incomplete_items)}/{total_items} items incomplete")
 
+        # Build message with incomplete items
         items_list = "\n".join([f"  - [ ] {item['task']}" for item in incomplete_items[:10]])
         if len(incomplete_items) > 10:
             items_list += f"\n  ... and {len(incomplete_items) - 10} more"
 
+        # Get next task to work on
         next_task = incomplete_items[0]['task'] if incomplete_items else "Unknown"
 
-        system_msg = f"""STOP BLOCKED: {len(incomplete_items)} of {total_items} plan items incomplete.
+        # Build a directive message that prompts Claude to continue
+        system_msg = f"""🚫 STOP BLOCKED: {len(incomplete_items)} of {total_items} plan items incomplete.
 
 Remaining items:
 {items_list}
 
-NEXT TASK: "{next_task}"
+👉 NEXT TASK: "{next_task}"
 
 Type "c" to continue, or "force stop" to stop anyway."""
 
+        # BLOCK the stop and prompt continuation
         output_hook_response(False, system_msg)
 
     except json.JSONDecodeError as e:
         log_debug(f"JSON decode error: {e}")
-        output_hook_response(True)
+        output_hook_response(True)  # Allow stop on error
     except Exception as e:
         log_debug(f"Unexpected error: {e}")
-        output_hook_response(True)
+        output_hook_response(True)  # Allow stop on error
 
 
 if __name__ == "__main__":

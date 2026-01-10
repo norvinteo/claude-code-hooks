@@ -15,9 +15,8 @@ from datetime import datetime
 from pathlib import Path
 
 # Configuration
-HOOKS_DIR = Path("{{PROJECT_DIR}}/.claude/hooks")
-PLAN_STATE_FILE = HOOKS_DIR / "plan_state.json"
-DEBUG_LOG = Path("{{PROJECT_DIR}}/progress/.todo_sync_debug.log")
+HOOKS_DIR = Path(__file__).parent
+DEBUG_LOG = HOOKS_DIR.parent / "progress/.todo_sync_debug.log"
 
 # Stop words to filter out when extracting keywords
 STOP_WORDS = {
@@ -48,6 +47,17 @@ SYNONYMS = {
 }
 
 
+def get_session_files(session_id: str) -> tuple:
+    """Get session-scoped file paths."""
+    sessions_dir = HOOKS_DIR / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    plan_state_file = sessions_dir / f"{session_id}_plan_state.json"
+    stop_attempts_file = sessions_dir / f"{session_id}_stop_attempts.json"
+
+    return plan_state_file, stop_attempts_file
+
+
 def log_debug(message: str):
     """Log debug message to file."""
     try:
@@ -70,27 +80,27 @@ def load_config() -> dict:
     return {}
 
 
-def load_plan_state() -> dict:
+def load_plan_state(plan_state_file: Path) -> dict:
     """Load plan state from file."""
     try:
-        if PLAN_STATE_FILE.exists():
-            with open(PLAN_STATE_FILE, "r") as f:
+        if plan_state_file.exists():
+            with open(plan_state_file, "r") as f:
                 return json.load(f)
     except Exception as e:
         log_debug(f"Error loading plan state: {e}")
     return {"items": []}
 
 
-def save_plan_state(state: dict):
+def save_plan_state(state: dict, plan_state_file: Path) -> bool:
     """Save plan state to file."""
     try:
-        HOOKS_DIR.mkdir(parents=True, exist_ok=True)
+        plan_state_file.parent.mkdir(parents=True, exist_ok=True)
         state["updated_at"] = datetime.now().isoformat()
 
-        with open(PLAN_STATE_FILE, "w") as f:
+        with open(plan_state_file, "w") as f:
             json.dump(state, f, indent=2)
 
-        log_debug(f"Saved plan state: {len(state.get('items', []))} items")
+        log_debug(f"Saved plan state to {plan_state_file.name}: {len(state.get('items', []))} items")
         return True
     except Exception as e:
         log_debug(f"Error saving plan state: {e}")
@@ -221,8 +231,12 @@ def main():
 
         # Read JSON input from stdin
         data = json.load(sys.stdin)
+        session_id = data.get("session_id", "default")
 
-        log_debug(f"Todo sync triggered: {json.dumps(data, indent=2)[:500]}")
+        # Get session-scoped file paths
+        plan_state_file, _ = get_session_files(session_id)
+
+        log_debug(f"Session {session_id}: Todo sync triggered")
 
         # Extract todos from tool input
         tool_input = data.get("tool_input", {})
@@ -233,14 +247,14 @@ def main():
             sys.exit(0)
 
         # Load plan state
-        plan_state = load_plan_state()
+        plan_state = load_plan_state(plan_state_file)
         plan_items = plan_state.get("items", [])
 
         # Check if there's an active plan
         has_active_plan = plan_state.get("name") or plan_state.get("session_id")
 
         if not has_active_plan:
-            log_debug("No active plan, skipping todo sync")
+            log_debug(f"Session {session_id}: No active plan, skipping todo sync")
             sys.exit(0)
 
         # Track changes
@@ -319,10 +333,10 @@ def main():
         # Save if changes were made
         if changes_made > 0:
             plan_state["items"] = plan_items
-            save_plan_state(plan_state)
-            log_debug(f"Updated plan: {changes_made} changes made")
+            save_plan_state(plan_state, plan_state_file)
+            log_debug(f"Session {session_id}: Updated plan: {changes_made} changes made")
         else:
-            log_debug("No changes to plan")
+            log_debug(f"Session {session_id}: No changes to plan")
 
     except json.JSONDecodeError as e:
         log_debug(f"JSON decode error: {e}")

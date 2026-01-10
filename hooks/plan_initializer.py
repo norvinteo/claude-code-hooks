@@ -20,9 +20,19 @@ from datetime import datetime
 from pathlib import Path
 
 # Configuration
-HOOKS_DIR = Path("{{PROJECT_DIR}}/.claude/hooks")
-PLAN_STATE_FILE = HOOKS_DIR / "plan_state.json"
-DEBUG_LOG = Path("{{PROJECT_DIR}}/progress/.plan_init_debug.log")
+HOOKS_DIR = Path(__file__).parent
+DEBUG_LOG = HOOKS_DIR.parent / "progress/.plan_init_debug.log"
+
+
+def get_session_files(session_id: str) -> tuple:
+    """Get session-scoped file paths."""
+    sessions_dir = HOOKS_DIR / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    plan_state_file = sessions_dir / f"{session_id}_plan_state.json"
+    stop_attempts_file = sessions_dir / f"{session_id}_stop_attempts.json"
+
+    return plan_state_file, stop_attempts_file
 
 
 def log_debug(message: str):
@@ -35,35 +45,35 @@ def log_debug(message: str):
         pass
 
 
-def load_plan_state() -> dict:
+def load_plan_state(plan_state_file: Path) -> dict:
     """Load plan state from file."""
     try:
-        if PLAN_STATE_FILE.exists():
-            return json.loads(PLAN_STATE_FILE.read_text())
+        if plan_state_file.exists():
+            return json.loads(plan_state_file.read_text())
     except Exception as e:
         log_debug(f"Error loading plan state: {e}")
     return None
 
 
-def save_plan_state(state: dict):
+def save_plan_state(state: dict, plan_state_file: Path) -> bool:
     """Save plan state to file."""
     try:
-        HOOKS_DIR.mkdir(parents=True, exist_ok=True)
+        plan_state_file.parent.mkdir(parents=True, exist_ok=True)
         state["updated_at"] = datetime.now().isoformat()
-        PLAN_STATE_FILE.write_text(json.dumps(state, indent=2))
-        log_debug(f"Saved plan state: {state.get('name', 'Unknown')}")
+        plan_state_file.write_text(json.dumps(state, indent=2))
+        log_debug(f"Saved plan state to {plan_state_file.name}: {state.get('name', 'Unknown')}")
         return True
     except Exception as e:
         log_debug(f"Error saving plan state: {e}")
         return False
 
 
-def clear_plan_state():
+def clear_plan_state(plan_state_file: Path) -> bool:
     """Clear plan state file."""
     try:
-        if PLAN_STATE_FILE.exists():
-            PLAN_STATE_FILE.unlink()
-        log_debug("Cleared plan state")
+        if plan_state_file.exists():
+            plan_state_file.unlink()
+        log_debug(f"Cleared plan state: {plan_state_file.name}")
         return True
     except Exception as e:
         log_debug(f"Error clearing plan state: {e}")
@@ -73,7 +83,7 @@ def clear_plan_state():
 def get_plan_summary(plan_state: dict) -> str:
     """Generate plan summary."""
     if not plan_state:
-        return "No active plan."
+        return "No active plan for this session."
 
     items = plan_state.get("items", [])
     name = plan_state.get("name", "Unnamed Plan")
@@ -116,19 +126,25 @@ def output_hook_response(continue_execution: bool = True, message: str = None):
 def main():
     """Main entry point for the hook."""
     try:
+        # Read JSON input from stdin
         data = json.load(sys.stdin)
 
         prompt = data.get("prompt", "").strip()
-        session_id = data.get("session_id", "")
+        session_id = data.get("session_id", "default")
 
-        log_debug(f"Received prompt: {prompt[:100]}...")
+        # Get session-scoped file paths
+        plan_state_file, _ = get_session_files(session_id)
 
+        log_debug(f"Session {session_id}: Received prompt: {prompt[:100]}...")
+
+        # Check for plan commands
         prompt_lower = prompt.lower()
 
+        # /plan <name> or /newplan <name>
         plan_match = re.match(r'^/(?:new)?plan\s+(.+)$', prompt, re.IGNORECASE)
         if plan_match:
             plan_name = plan_match.group(1).strip()
-            log_debug(f"Initializing plan: {plan_name}")
+            log_debug(f"Session {session_id}: Initializing plan: {plan_name}")
 
             plan_state = {
                 "session_id": session_id,
@@ -143,7 +159,7 @@ def main():
                 "updated_at": datetime.now().isoformat()
             }
 
-            if save_plan_state(plan_state):
+            if save_plan_state(plan_state, plan_state_file):
                 output_hook_response(
                     True,
                     message=f"📋 New plan initialized: **{plan_name}**\n\n"
@@ -155,21 +171,24 @@ def main():
                 output_hook_response(True, message="❌ Failed to initialize plan.")
             sys.exit(0)
 
+        # /clearplan
         if prompt_lower in ["/clearplan", "/clear-plan", "/cleartasks"]:
-            log_debug("Clearing plan")
-            if clear_plan_state():
+            log_debug(f"Session {session_id}: Clearing plan")
+            if clear_plan_state(plan_state_file):
                 output_hook_response(True, message="🗑️ Plan cleared. Stop verification disabled.")
             else:
                 output_hook_response(True, message="❌ Failed to clear plan.")
             sys.exit(0)
 
+        # /showplan
         if prompt_lower in ["/showplan", "/show-plan", "/planstatus", "/plan-status"]:
-            log_debug("Showing plan status")
-            plan_state = load_plan_state()
+            log_debug(f"Session {session_id}: Showing plan status")
+            plan_state = load_plan_state(plan_state_file)
             summary = get_plan_summary(plan_state)
             output_hook_response(True, message=summary)
             sys.exit(0)
 
+        # No plan command - just continue normally
         output_hook_response(True)
 
     except json.JSONDecodeError as e:

@@ -4,6 +4,9 @@ Plan Context Injection Hook - Injects plan progress into tool calls.
 
 Triggers on: PreToolUse (Write, Edit, Task)
 Purpose: Remind Claude of current plan progress before executing tools.
+
+This helps Claude stay focused on the current task and maintain awareness
+of overall plan progress.
 """
 
 import json
@@ -12,12 +15,24 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-HOOKS_DIR = Path("{{PROJECT_DIR}}/.claude/hooks")
-PLAN_STATE_FILE = HOOKS_DIR / "plan_state.json"
-DEBUG_LOG = Path("{{PROJECT_DIR}}/progress/.inject_context_debug.log")
+# Configuration
+HOOKS_DIR = Path(__file__).parent
+DEBUG_LOG = HOOKS_DIR.parent / "progress/.inject_context_debug.log"
+
+
+def get_session_files(session_id: str) -> tuple:
+    """Get session-scoped file paths."""
+    sessions_dir = HOOKS_DIR / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    plan_state_file = sessions_dir / f"{session_id}_plan_state.json"
+    stop_attempts_file = sessions_dir / f"{session_id}_stop_attempts.json"
+
+    return plan_state_file, stop_attempts_file
 
 
 def log_debug(message: str):
+    """Log debug message to file."""
     try:
         DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(DEBUG_LOG, "a") as f:
@@ -27,6 +42,7 @@ def log_debug(message: str):
 
 
 def load_config() -> dict:
+    """Load config from file."""
     config_file = HOOKS_DIR / "config.json"
     try:
         if config_file.exists():
@@ -37,16 +53,18 @@ def load_config() -> dict:
     return {}
 
 
-def load_plan_state() -> dict:
+def load_plan_state(plan_state_file: Path) -> dict:
+    """Load plan state from file."""
     try:
-        if PLAN_STATE_FILE.exists():
-            return json.loads(PLAN_STATE_FILE.read_text())
+        if plan_state_file.exists():
+            return json.loads(plan_state_file.read_text())
     except Exception as e:
         log_debug(f"Error loading plan state: {e}")
     return None
 
 
 def get_plan_summary(plan_state: dict) -> str:
+    """Generate a concise plan summary."""
     if not plan_state:
         return None
 
@@ -54,9 +72,12 @@ def get_plan_summary(plan_state: dict) -> str:
     if not items:
         return None
 
+    # Count statuses
     completed = sum(1 for i in items if i.get("status") in ["completed", "done"])
     in_progress = sum(1 for i in items if i.get("status") == "in_progress")
+    pending = len(items) - completed - in_progress
 
+    # Find current task (first in_progress or first pending)
     current_task = None
     next_task = None
 
@@ -68,6 +89,7 @@ def get_plan_summary(plan_state: dict) -> str:
         elif status in ["pending", ""] and not current_task:
             current_task = item.get("task", "Unknown")
 
+    # Find next task after current
     found_current = False
     for item in items:
         status = item.get("status", "pending")
@@ -77,23 +99,25 @@ def get_plan_summary(plan_state: dict) -> str:
         if item.get("task") == current_task:
             found_current = True
 
+    # Build summary
     plan_name = plan_state.get("name", "Current Plan")
     progress_pct = (completed / len(items)) * 100 if items else 0
 
     summary_parts = [
-        f"{plan_name}: {completed}/{len(items)} ({progress_pct:.0f}%)"
+        f"📋 {plan_name}: {completed}/{len(items)} ({progress_pct:.0f}%)"
     ]
 
     if current_task:
-        summary_parts.append(f"Current: {current_task[:60]}{'...' if len(current_task) > 60 else ''}")
+        summary_parts.append(f"⏳ Current: {current_task[:60]}{'...' if len(current_task) > 60 else ''}")
 
     if next_task and next_task != current_task:
-        summary_parts.append(f"Next: {next_task[:50]}{'...' if len(next_task) > 50 else ''}")
+        summary_parts.append(f"⏭️ Next: {next_task[:50]}{'...' if len(next_task) > 50 else ''}")
 
     return "\n".join(summary_parts)
 
 
 def output_hook_response(continue_execution: bool = True, system_message: str = None):
+    """Output JSON response for hook system."""
     response = {"continue": continue_execution}
     if system_message:
         response["systemMessage"] = system_message
@@ -101,7 +125,9 @@ def output_hook_response(continue_execution: bool = True, system_message: str = 
 
 
 def main():
+    """Main entry point for the hook."""
     try:
+        # Check if plan verification is enabled
         config = load_config()
         env_enabled = os.environ.get("CLAUDE_PLAN_VERIFICATION", "").lower() == "true"
         config_enabled = config.get("plan_verification", False)
@@ -110,17 +136,24 @@ def main():
             output_hook_response(True)
             sys.exit(0)
 
+        # Read JSON input from stdin
         data = json.load(sys.stdin)
 
         tool_name = data.get("tool_name", "")
+        session_id = data.get("session_id", "default")
         log_debug(f"PreToolUse for {tool_name}")
 
-        plan_state = load_plan_state()
+        # Get session-scoped file paths
+        plan_state_file, _ = get_session_files(session_id)
+
+        # Load plan state
+        plan_state = load_plan_state(plan_state_file)
 
         if not plan_state or not plan_state.get("items"):
             output_hook_response(True)
             sys.exit(0)
 
+        # Generate summary
         summary = get_plan_summary(plan_state)
 
         if summary:

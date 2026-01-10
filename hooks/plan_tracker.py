@@ -13,17 +13,30 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-HOOKS_DIR = Path("{{PROJECT_DIR}}/.claude/hooks")
-PLAN_STATE_FILE = HOOKS_DIR / "plan_state.json"
-DEBUG_LOG = Path("{{PROJECT_DIR}}/progress/.plan_tracker_debug.log")
+# Configuration
+HOOKS_DIR = Path(__file__).parent
+DEBUG_LOG = HOOKS_DIR.parent / "progress/.plan_tracker_debug.log"
 
+# Plan file locations (both user-level and project-level)
 PLAN_DIRS = [
-    Path.home() / ".claude/plans",
-    Path("{{PROJECT_DIR}}/.claude/plans"),
+    Path.home() / ".claude/plans",  # User-level plans
+    HOOKS_DIR.parent / "plans",      # Project-level plans
 ]
 
 
+def get_session_files(session_id: str) -> tuple:
+    """Get session-scoped file paths."""
+    sessions_dir = HOOKS_DIR / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    plan_state_file = sessions_dir / f"{session_id}_plan_state.json"
+    stop_attempts_file = sessions_dir / f"{session_id}_stop_attempts.json"
+
+    return plan_state_file, stop_attempts_file
+
+
 def log_debug(message: str):
+    """Log debug message to file."""
     try:
         DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(DEBUG_LOG, "a") as f:
@@ -33,7 +46,10 @@ def log_debug(message: str):
 
 
 def is_plan_file(file_path: str) -> bool:
+    """Check if the file is a plan file."""
     path = Path(file_path)
+    # Match any .claude/plans/*.json or .claude/plans/*.md file
+    # Support both user-level (~/.claude/plans) and project-level (.claude/plans)
     return (
         (".claude/plans" in str(path) or "/plans/" in str(path)) and
         path.suffix in [".json", ".md"]
@@ -41,6 +57,7 @@ def is_plan_file(file_path: str) -> bool:
 
 
 def parse_json_plan(content: str) -> dict:
+    """Parse a JSON plan file."""
     try:
         plan_data = json.loads(content)
         return {
@@ -101,7 +118,7 @@ def parse_markdown_plan(content: str) -> dict:
 
     # ONLY parse checkbox items - [ ] or - [x] or * [ ] or * [x]
     # Also support - [~] for explicit non-actionable items
-    checkbox_pattern = r'^[-*]\s*\[([ xX~])\]\s*(.+)$'
+    checkbox_pattern = r'^[-*]\s*\[([  xX~])\]\s*(.+)$'
 
     # Track section headers for context
     header_pattern = r'^###?\s*(.+)$'
@@ -156,6 +173,7 @@ def parse_markdown_plan(content: str) -> dict:
                 "actionable": is_actionable
             })
 
+    # Extract plan name from first H1 or H2
     name_match = re.search(r'^#\s+(?:Plan:?\s*)?(.+)$', content, re.MULTILINE)
     name = name_match.group(1).strip() if name_match else "Unnamed Plan"
 
@@ -168,10 +186,11 @@ def parse_markdown_plan(content: str) -> dict:
     }
 
 
-def load_plan_state() -> dict:
+def load_plan_state(plan_state_file: Path) -> dict:
+    """Load existing plan state or return empty state."""
     try:
-        if PLAN_STATE_FILE.exists():
-            with open(PLAN_STATE_FILE, "r") as f:
+        if plan_state_file.exists():
+            with open(plan_state_file, "r") as f:
                 return json.load(f)
     except Exception as e:
         log_debug(f"Error loading plan state: {e}")
@@ -186,15 +205,16 @@ def load_plan_state() -> dict:
     }
 
 
-def save_plan_state(state: dict):
+def save_plan_state(state: dict, plan_state_file: Path):
+    """Save plan state to file."""
     try:
-        HOOKS_DIR.mkdir(parents=True, exist_ok=True)
+        plan_state_file.parent.mkdir(parents=True, exist_ok=True)
         state["updated_at"] = datetime.now().isoformat()
 
-        with open(PLAN_STATE_FILE, "w") as f:
+        with open(plan_state_file, "w") as f:
             json.dump(state, f, indent=2)
 
-        log_debug(f"Saved plan state: {len(state.get('items', []))} items")
+        log_debug(f"Saved plan state to {plan_state_file.name}: {len(state.get('items', []))} items")
         return True
     except Exception as e:
         log_debug(f"Error saving plan state: {e}")
@@ -202,6 +222,7 @@ def save_plan_state(state: dict):
 
 
 def read_file_content(file_path: str) -> str:
+    """Read content of a file."""
     try:
         with open(file_path, "r") as f:
             return f.read()
@@ -210,13 +231,15 @@ def read_file_content(file_path: str) -> str:
         return None
 
 
-def process_plan_file(file_path: str, session_id: str) -> bool:
+def process_plan_file(file_path: str, session_id: str, plan_state_file: Path) -> bool:
+    """Process a plan file and update plan state."""
     content = read_file_content(file_path)
     if not content:
         return False
 
     path = Path(file_path)
 
+    # Parse based on file extension
     if path.suffix == ".json":
         plan_data = parse_json_plan(content)
     else:
@@ -226,15 +249,19 @@ def process_plan_file(file_path: str, session_id: str) -> bool:
         log_debug(f"Failed to parse plan file: {file_path}")
         return False
 
-    existing_state = load_plan_state()
+    # Load existing state to preserve item statuses if this is an update
+    existing_state = load_plan_state(plan_state_file)
 
+    # If same plan file, preserve existing item statuses
     if existing_state.get("plan_file") == file_path:
         existing_items = {item["task"]: item["status"] for item in existing_state.get("items", [])}
         for item in plan_data["items"]:
             if item["task"] in existing_items:
+                # Preserve status unless it's explicitly set in the file
                 if item.get("status") == "pending" and existing_items[item["task"]] == "completed":
                     item["status"] = "completed"
 
+    # Create new plan state
     plan_state = {
         "session_id": session_id,
         "plan_source": "file",
@@ -248,10 +275,11 @@ def process_plan_file(file_path: str, session_id: str) -> bool:
         "updated_at": datetime.now().isoformat()
     }
 
-    return save_plan_state(plan_state)
+    return save_plan_state(plan_state, plan_state_file)
 
 
 def load_config() -> dict:
+    """Load config from file."""
     config_file = HOOKS_DIR / "config.json"
     try:
         if config_file.exists():
@@ -263,38 +291,50 @@ def load_config() -> dict:
 
 
 def main():
+    """Main entry point for the hook."""
     try:
+        # Check if plan verification is enabled (config file OR env var)
         config = load_config()
         env_enabled = os.environ.get("CLAUDE_PLAN_VERIFICATION", "").lower() == "true"
         config_enabled = config.get("plan_verification", False)
 
         if not (env_enabled or config_enabled):
+            # Silently exit if not enabled
             sys.exit(0)
 
+        # Read JSON input from stdin
         data = json.load(sys.stdin)
 
         log_debug(f"Received hook data: {json.dumps(data, indent=2)[:500]}")
 
+        # Extract relevant information
         tool_name = data.get("tool_name", "")
         tool_input = data.get("tool_input", {})
         session_id = data.get("session_id", "")
 
+        # Only process Write or Edit tools
         if tool_name not in ["Write", "Edit"]:
             sys.exit(0)
 
+        # Get the file path from tool input
         file_path = tool_input.get("file_path", "")
 
         if not file_path:
             log_debug("No file_path in tool input")
             sys.exit(0)
 
+        # Check if this is a plan file
         if not is_plan_file(file_path):
             log_debug(f"Not a plan file: {file_path}")
             sys.exit(0)
 
         log_debug(f"Processing plan file: {file_path}")
 
-        if process_plan_file(file_path, session_id):
+        # Get session-scoped file paths
+        plan_state_file, _ = get_session_files(session_id)
+
+        # Process the plan file
+        if process_plan_file(file_path, session_id, plan_state_file):
             log_debug(f"Successfully processed plan file: {file_path}")
         else:
             log_debug(f"Failed to process plan file: {file_path}")

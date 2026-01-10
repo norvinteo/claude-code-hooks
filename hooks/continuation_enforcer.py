@@ -4,6 +4,8 @@ Continuation Enforcer Hook - Reinforces continuation after blocked stops.
 
 Triggers on: PrePromptSubmit
 Purpose: If previous stop was blocked, remind Claude to continue working.
+
+This works with stop_verifier.py to create a more robust continuation loop.
 """
 
 import json
@@ -12,13 +14,24 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-HOOKS_DIR = Path("{{PROJECT_DIR}}/.claude/hooks")
-PLAN_STATE_FILE = HOOKS_DIR / "plan_state.json"
-STOP_ATTEMPTS_FILE = HOOKS_DIR / "stop_attempts.json"
-DEBUG_LOG = Path("{{PROJECT_DIR}}/progress/.continuation_debug.log")
+# Configuration
+HOOKS_DIR = Path(__file__).parent
+DEBUG_LOG = HOOKS_DIR.parent / "progress/.continuation_debug.log"
+
+
+def get_session_files(session_id: str) -> tuple:
+    """Get session-scoped file paths."""
+    sessions_dir = HOOKS_DIR / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    plan_state_file = sessions_dir / f"{session_id}_plan_state.json"
+    stop_attempts_file = sessions_dir / f"{session_id}_stop_attempts.json"
+
+    return plan_state_file, stop_attempts_file
 
 
 def log_debug(message: str):
+    """Log debug message to file."""
     try:
         DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(DEBUG_LOG, "a") as f:
@@ -27,22 +40,25 @@ def log_debug(message: str):
         pass
 
 
-def load_plan_state() -> dict:
+def load_plan_state(plan_state_file: Path) -> dict:
+    """Load plan state from file."""
     try:
-        if PLAN_STATE_FILE.exists():
-            return json.loads(PLAN_STATE_FILE.read_text())
+        if plan_state_file.exists():
+            return json.loads(plan_state_file.read_text())
     except Exception:
         pass
     return None
 
 
-def load_stop_attempts() -> dict:
+def load_stop_attempts(stop_attempts_file: Path) -> int:
+    """Load stop attempts count for the session."""
     try:
-        if STOP_ATTEMPTS_FILE.exists():
-            return json.loads(STOP_ATTEMPTS_FILE.read_text())
+        if stop_attempts_file.exists():
+            data = json.loads(stop_attempts_file.read_text())
+            return data.get("attempts", 0)
     except Exception:
         pass
-    return {}
+    return 0
 
 
 def get_incomplete_items(plan_state: dict) -> list:
@@ -61,6 +77,7 @@ def get_incomplete_items(plan_state: dict) -> list:
 
 
 def output_hook_response(continue_execution: bool = True, system_message: str = None):
+    """Output JSON response for hook system."""
     response = {"continue": continue_execution}
     if system_message:
         response["systemMessage"] = system_message
@@ -68,23 +85,30 @@ def output_hook_response(continue_execution: bool = True, system_message: str = 
 
 
 def main():
+    """Main entry point for the hook."""
     try:
+        # Read JSON input from stdin
         data = json.load(sys.stdin)
 
         session_id = data.get("session_id", "")
         prompt = data.get("prompt", "").strip().lower()
 
+        # Don't interfere with explicit commands
         if prompt.startswith("/"):
             output_hook_response(True)
             sys.exit(0)
 
-        stop_attempts = load_stop_attempts()
-        attempts = stop_attempts.get(session_id, 0)
+        # Get session-scoped file paths
+        plan_state_file, stop_attempts_file = get_session_files(session_id)
+
+        # Check if there were recent blocked stop attempts
+        attempts = load_stop_attempts(stop_attempts_file)
 
         if attempts > 0:
             log_debug(f"Session {session_id} has {attempts} blocked stop attempts")
 
-            plan_state = load_plan_state()
+            # Load plan state to get next task
+            plan_state = load_plan_state(plan_state_file)
             incomplete = get_incomplete_items(plan_state)
 
             if incomplete:
@@ -95,8 +119,9 @@ def main():
                 completed = len(actionable) - len(incomplete)
                 total = len(actionable)
 
+                # Inject a reminder
                 reminder = (
-                    f"Plan progress: {completed}/{total} complete. "
+                    f"📋 Plan progress: {completed}/{total} complete. "
                     f"Continue with: \"{next_task[:60]}{'...' if len(next_task) > 60 else ''}\""
                 )
 
@@ -104,6 +129,7 @@ def main():
                 output_hook_response(True, reminder)
                 sys.exit(0)
 
+        # No blocked attempts or no incomplete items
         output_hook_response(True)
 
     except json.JSONDecodeError as e:
