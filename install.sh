@@ -96,7 +96,7 @@ echo -e "${GREEN}Creating settings.json...${NC}"
 cat > "$TARGET_PROJECT/.claude/settings.json" << EOF
 {
   "hooks": {
-    "PrePromptSubmit": [
+    "UserPromptSubmit": [
       {
         "hooks": [
           {
@@ -191,7 +191,6 @@ cat > "$TARGET_PROJECT/.claude/settings.json" << EOF
     ],
     "SubagentStop": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
