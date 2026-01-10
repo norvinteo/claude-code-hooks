@@ -4,6 +4,13 @@ Stop Verifier Hook - Blocks stop when plan items are incomplete.
 
 Triggers on: Stop event
 Purpose: Check plan_state.json for incomplete items and BLOCK stop until done.
+
+Behavior:
+- Only counts ACTIONABLE items (skips templates, categories, reference items)
+- If actionable items incomplete → BLOCK stop (continue=False)
+- If all actionable items complete → Allow stop
+- If user uses /force-stop → Allow stop anyway
+- If no plan → Allow stop
 """
 
 import json
@@ -131,12 +138,25 @@ def check_force_stop(transcript_path: str) -> bool:
 
 
 def get_incomplete_items(plan_state: dict) -> list:
+    """Get list of incomplete ACTIONABLE items from plan state.
+
+    Only returns items where:
+    - status is not "completed" or "done"
+    - actionable is not explicitly False (templates/categories are skipped)
+
+    This prevents template/category checkboxes from blocking the stop.
+    """
     incomplete = []
 
     if not plan_state or "items" not in plan_state:
         return incomplete
 
     for item in plan_state["items"]:
+        # Skip non-actionable items (templates, categories, reference items)
+        # Items without 'actionable' field default to True (actionable)
+        if item.get("actionable") is False:
+            continue
+
         status = item.get("status", "pending")
         if status not in ["completed", "done"]:
             incomplete.append({
@@ -197,9 +217,18 @@ def main():
             output_hook_response(True)
             sys.exit(0)
 
+        # Get incomplete items from plan state only (filters out non-actionable items)
         incomplete_items = get_incomplete_items(plan_state)
-        total_items = len(plan_state.get("items", []))
+
+        # Count total actionable items (for accurate progress reporting)
+        all_items = plan_state.get("items", [])
+        actionable_items = [i for i in all_items if i.get("actionable") is not False]
+        non_actionable_count = len(all_items) - len(actionable_items)
+        total_items = len(actionable_items)
         completed_items = total_items - len(incomplete_items)
+
+        if non_actionable_count > 0:
+            log_debug(f"Skipping {non_actionable_count} non-actionable items (templates/categories)")
 
         if not incomplete_items:
             log_debug("All items completed!")

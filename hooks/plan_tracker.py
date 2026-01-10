@@ -55,33 +55,98 @@ def parse_json_plan(content: str) -> dict:
         return None
 
 
+# Keywords that indicate a section contains template/category items, not actionable tasks
+NON_ACTIONABLE_SECTION_KEYWORDS = [
+    "template",
+    "categories",
+    "what to look for",
+    "per-module",
+    "checklist items",
+    "audit each module",
+    "performance issues",
+    "consistency issues",
+    "security issues",
+    "maintainability issues",
+    "cross-cutting concerns",
+]
+
+
+def is_non_actionable_section(section: str) -> bool:
+    """Check if a section header indicates non-actionable (template/category) items."""
+    if not section:
+        return False
+    section_lower = section.lower()
+    return any(keyword in section_lower for keyword in NON_ACTIONABLE_SECTION_KEYWORDS)
+
+
 def parse_markdown_plan(content: str) -> dict:
+    """Parse a Markdown plan file for task items.
+
+    IMPORTANT: Only parses checkbox items (- [ ] or - [x]).
+    Numbered lists, headers, and other markdown elements are NOT parsed as tasks.
+    This prevents design notes and documentation from being treated as actionable items.
+
+    Items under template/category sections are marked as non-actionable (actionable: false).
+    These won't block the stop verifier.
+    """
     items = []
     item_id = 0
 
-    checkbox_pattern = r'^[-*]\s*\[([  xX])\]\s*(.+)$'
+    # ONLY parse checkbox items - [ ] or - [x] or * [ ] or * [x]
+    # Also support - [~] for explicit non-actionable items
+    checkbox_pattern = r'^[-*]\s*\[([ xX~])\]\s*(.+)$'
+
+    # Track section headers for context
     header_pattern = r'^###?\s*(.+)$'
+
+    # Track context paragraphs that indicate template sections
+    template_context_pattern = r'(?:document findings|for each module|categories|template|what to look for|audit each)'
 
     lines = content.split('\n')
     current_section = None
+    is_template_context = False  # Track if we're in a template context
 
     for line in lines:
         line = line.strip()
 
+        # Check for section headers (for context, not as tasks)
         header_match = re.match(header_pattern, line)
         if header_match:
             current_section = header_match.group(1).strip()
+            # Reset template context when entering a new section
+            is_template_context = False
             continue
 
+        # Check for template context indicators in prose
+        if re.search(template_context_pattern, line, re.IGNORECASE):
+            is_template_context = True
+
+        # ONLY check for checkbox items - these are the actual tasks
         checkbox_match = re.match(checkbox_pattern, line)
         if checkbox_match:
             item_id += 1
-            status = "completed" if checkbox_match.group(1).lower() == 'x' else "pending"
+            checkbox_char = checkbox_match.group(1).lower()
+
+            # Determine status
+            if checkbox_char == 'x':
+                status = "completed"
+            else:
+                status = "pending"
+
+            # Determine if actionable
+            # Non-actionable if: explicit [~], template context, or non-actionable section
+            is_actionable = (
+                checkbox_char != '~' and  # Explicit non-actionable syntax
+                not is_template_context and  # Template context detected
+                not is_non_actionable_section(current_section)  # Section keywords
+            )
+
             items.append({
                 "id": item_id,
                 "task": checkbox_match.group(2).strip(),
                 "status": status,
-                "section": current_section
+                "section": current_section,
+                "actionable": is_actionable
             })
 
     name_match = re.search(r'^#\s+(?:Plan:?\s*)?(.+)$', content, re.MULTILINE)
