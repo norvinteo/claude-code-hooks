@@ -195,33 +195,93 @@ def main():
         plan_state = load_plan_state()
         plan_items = plan_state.get("items", [])
 
-        if not plan_items:
-            log_debug("No plan items to match against")
+        # Check if there's an active plan
+        has_active_plan = plan_state.get("name") or plan_state.get("session_id")
+
+        if not has_active_plan:
+            log_debug("No active plan, skipping todo sync")
             sys.exit(0)
 
         # Track changes
         changes_made = 0
 
-        # Process each completed todo
-        for todo in todos:
-            if todo.get("status") == "completed":
+        # If plan has no items yet, add todos as plan items
+        if not plan_items:
+            log_debug("Plan has no items, adding todos as plan items")
+            for i, todo in enumerate(todos):
                 content = todo.get("content", "")
-                match_index = match_with_haiku(content, plan_items)
+                status = todo.get("status", "pending")
+                plan_items.append({
+                    "id": i + 1,
+                    "task": content,
+                    "status": "completed" if status == "completed" else "pending",
+                    "added_at": datetime.now().isoformat()
+                })
+                if status == "completed":
+                    plan_items[-1]["completed_at"] = datetime.now().isoformat()
+                changes_made += 1
+                log_debug(f"Added plan item: {content[:50]}")
+        else:
+            # Sync todos with existing plan items
+            existing_tasks = {item.get("task", "").lower(): i for i, item in enumerate(plan_items)}
 
-                if match_index is not None:
-                    if plan_items[match_index].get("status") != "completed":
-                        plan_items[match_index]["status"] = "completed"
-                        plan_items[match_index]["completed_at"] = datetime.now().isoformat()
+            for todo in todos:
+                content = todo.get("content", "")
+                status = todo.get("status", "pending")
+
+                # Check if this todo already exists in plan (exact match)
+                exact_match_idx = existing_tasks.get(content.lower())
+
+                if exact_match_idx is not None:
+                    # Exact match found - update status if completed
+                    if status == "completed" and plan_items[exact_match_idx].get("status") != "completed":
+                        plan_items[exact_match_idx]["status"] = "completed"
+                        plan_items[exact_match_idx]["completed_at"] = datetime.now().isoformat()
                         changes_made += 1
-                        log_debug(f"Marked plan item {match_index + 1} as completed: {plan_items[match_index]['task'][:50]}")
+                        log_debug(f"Exact match - marked complete: {content[:50]}")
+                else:
+                    # No exact match - try Haiku for semantic match on completed todos
+                    if status == "completed":
+                        match_index = match_with_haiku(content, plan_items)
+                        if match_index is not None:
+                            if plan_items[match_index].get("status") != "completed":
+                                plan_items[match_index]["status"] = "completed"
+                                plan_items[match_index]["completed_at"] = datetime.now().isoformat()
+                                changes_made += 1
+                                log_debug(f"Haiku match - marked complete: {plan_items[match_index]['task'][:50]}")
+                        else:
+                            # No match found - add as new completed item
+                            new_id = max((item.get("id", 0) for item in plan_items), default=0) + 1
+                            plan_items.append({
+                                "id": new_id,
+                                "task": content,
+                                "status": "completed",
+                                "added_at": datetime.now().isoformat(),
+                                "completed_at": datetime.now().isoformat()
+                            })
+                            existing_tasks[content.lower()] = len(plan_items) - 1
+                            changes_made += 1
+                            log_debug(f"Added new completed item: {content[:50]}")
+                    else:
+                        # Add new pending todo as plan item
+                        new_id = max((item.get("id", 0) for item in plan_items), default=0) + 1
+                        plan_items.append({
+                            "id": new_id,
+                            "task": content,
+                            "status": "pending",
+                            "added_at": datetime.now().isoformat()
+                        })
+                        existing_tasks[content.lower()] = len(plan_items) - 1
+                        changes_made += 1
+                        log_debug(f"Added new pending item: {content[:50]}")
 
         # Save if changes were made
         if changes_made > 0:
             plan_state["items"] = plan_items
             save_plan_state(plan_state)
-            log_debug(f"Updated {changes_made} plan items to completed")
+            log_debug(f"Updated plan: {changes_made} changes made")
         else:
-            log_debug("No plan items matched completed todos")
+            log_debug("No changes to plan")
 
     except json.JSONDecodeError as e:
         log_debug(f"JSON decode error: {e}")
