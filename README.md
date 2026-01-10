@@ -7,8 +7,9 @@ Ralph-style autonomous development hooks for Claude Code with stop blocking, cod
 - **Plan Commands** - `/plan`, `/showplan`, `/clearplan`
 - **Auto-sync** - TodoWrite completions sync to plan (smart keyword matching)
 - **Stop Blocking** - Prevents stopping until all tasks complete
-- **Loop Prevention** - Allows stop after 5 blocked attempts
+- **Loop Prevention** - Allows stop after configurable blocked attempts (default: 5)
 - **Force Stop** - Say "force stop" to bypass blocking
+- **Autonomous Operation** - Auto-continue script for tmux sessions
 - **Code Validation** - Runs TypeScript, lint, and build checks
 - **Session Archiving** - Archives completed plans
 - **Cost Tracking** - Tracks API usage per session
@@ -77,7 +78,13 @@ Example: "Login page implemented" matches "Create the login page"
 
 ### Loop Prevention
 
-To prevent infinite loops, stop is allowed after 5 blocked attempts.
+To prevent infinite loops, stop is allowed after a configurable number of blocked attempts (default: 5). You can change this in `config.json`:
+
+```json
+{
+  "max_stop_attempts": 10
+}
+```
 
 ### Force Stop
 
@@ -97,6 +104,44 @@ When all plan items are complete, the system runs:
 
 If validation fails, new fix tasks are added to the plan.
 
+---
+
+## Autonomous Operation (tmux)
+
+For fully autonomous operation without manual intervention, use the `auto_continue.sh` script:
+
+### Setup
+
+1. **Start Claude Code in a tmux session:**
+   ```bash
+   tmux new -s claude
+   claude  # Start Claude Code
+   ```
+
+2. **In another terminal, run the auto-continue script:**
+   ```bash
+   .claude/hooks/auto_continue.sh claude
+   ```
+
+### How It Works
+
+The script monitors your tmux session for "STOP BLOCKED" messages and automatically sends "c" to continue:
+
+```
+🤖 Auto-continue monitoring started for tmux session: claude
+   Press Ctrl+C to stop
+18:30:45 🔄 Stop blocked detected - sending 'c' to continue...
+18:32:12 🔄 Stop blocked detected - sending 'c' to continue...
+```
+
+### Features
+
+- **Duplicate detection** - Won't send multiple "c" commands for the same block
+- **Session monitoring** - Waits if tmux session isn't found
+- **Clean exit** - Press Ctrl+C to stop monitoring
+
+---
+
 ## Configuration
 
 Edit `.claude/hooks/config.json`:
@@ -109,14 +154,51 @@ Edit `.claude/hooks/config.json`:
   "max_session_cost": 10.00,
   "cost_warning_threshold": 0.8,
   "max_stop_attempts": 5,
+  "archive_old_plans": true,
   "notifications": {
     "mac": true,
+    "terminal_bell": true,
     "slack": false,
     "discord": false,
-    "telegram": false
-  }
+    "telegram": false,
+    "pushover": false
+  },
+  "validation_commands": [
+    {
+      "name": "TypeScript Check",
+      "command": "npm run tsc --noEmit",
+      "timeout": 120,
+      "required": true
+    },
+    {
+      "name": "Lint",
+      "command": "npm run lint",
+      "timeout": 60,
+      "required": false
+    },
+    {
+      "name": "Build",
+      "command": "npm run build",
+      "timeout": 300,
+      "required": true
+    }
+  ]
 }
 ```
+
+### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `plan_verification` | boolean | `true` | Enable plan tracking and stop blocking |
+| `auto_code_review` | boolean | `true` | Auto-trigger code review on completion |
+| `cost_tracking` | boolean | `true` | Track API usage costs |
+| `max_session_cost` | number | `10.00` | Maximum session cost in USD |
+| `cost_warning_threshold` | number | `0.8` | Warn at this percentage of max cost |
+| `max_stop_attempts` | number | `5` | Allow stop after N blocked attempts |
+| `archive_old_plans` | boolean | `true` | Archive completed plans |
+| `notifications` | object | - | Enable/disable notification channels |
+| `validation_commands` | array | - | Commands to run on completion |
 
 ---
 
@@ -380,6 +462,7 @@ cat progress/.notification_debug.log
 | `completion_validator.py` | Stop | Run code checks |
 | `session_cleanup.py` | Stop | Archive and cleanup |
 | `agent_complete_notify.py` | SubagentStop | Send notifications |
+| `auto_continue.sh` | External | Auto-continue in tmux |
 
 ## Credits
 
