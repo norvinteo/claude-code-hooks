@@ -46,11 +46,17 @@ def load_stop_attempts() -> dict:
 
 
 def get_incomplete_items(plan_state: dict) -> list:
+    """Get incomplete ACTIONABLE items from plan state.
+
+    Filters out non-actionable items (templates, categories) so only
+    real tasks are counted.
+    """
     if not plan_state or not plan_state.get("items"):
         return []
     return [
         item for item in plan_state.get("items", [])
         if item.get("status") not in ["completed", "done"]
+        and item.get("actionable") is not False  # Skip templates/categories
     ]
 
 
@@ -83,8 +89,11 @@ def main():
 
             if incomplete:
                 next_task = incomplete[0].get("task", "the next task")
-                completed = len(plan_state.get("items", [])) - len(incomplete)
-                total = len(plan_state.get("items", []))
+                # Count only actionable items for progress
+                all_items = plan_state.get("items", [])
+                actionable = [i for i in all_items if i.get("actionable") is not False]
+                completed = len(actionable) - len(incomplete)
+                total = len(actionable)
 
                 reminder = (
                     f"Plan progress: {completed}/{total} complete. "

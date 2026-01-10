@@ -7,10 +7,10 @@ Purpose: Check plan_state.json for incomplete items and BLOCK stop until done.
 
 Behavior:
 - Only counts ACTIONABLE items (skips templates, categories, reference items)
-- If actionable items incomplete → BLOCK stop (continue=False)
-- If all actionable items complete → Allow stop
-- If user uses /force-stop → Allow stop anyway
-- If no plan → Allow stop
+- If actionable items incomplete -> BLOCK stop (continue=False)
+- If all actionable items complete -> Allow stop
+- If user uses /force-stop -> Allow stop anyway
+- If no plan -> Allow stop
 """
 
 import json
@@ -251,9 +251,9 @@ def main():
 Remaining items:
 {items_list}
 
-CONTINUE WORKING on: "{next_task}"
+NEXT TASK: "{next_task}"
 
-Complete this task, then mark it done. Say "force stop" to stop anyway."""
+Type "c" to continue, or "force stop" to stop anyway."""
 
         output_hook_response(False, system_msg)
 
