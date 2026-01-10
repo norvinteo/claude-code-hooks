@@ -1,0 +1,37 @@
+{
+  "plan_verification": true,
+  "auto_code_review": true,
+  "cost_tracking": true,
+  "max_session_cost": 10.00,
+  "cost_warning_threshold": 0.8,
+  "max_stop_attempts": 5,
+  "archive_old_plans": true,
+  "notifications": {
+    "mac": true,
+    "terminal_bell": true,
+    "slack": false,
+    "discord": false,
+    "telegram": false,
+    "pushover": false
+  },
+  "validation_commands": [
+    {
+      "name": "TypeScript Check",
+      "command": "npm run tsc --noEmit || bun run tsc --noEmit || yarn tsc --noEmit",
+      "timeout": 120,
+      "required": true
+    },
+    {
+      "name": "Lint",
+      "command": "npm run lint || bun run lint || yarn lint",
+      "timeout": 60,
+      "required": false
+    },
+    {
+      "name": "Build",
+      "command": "npm run build || bun run build || yarn build",
+      "timeout": 300,
+      "required": true
+    }
+  ]
+}
