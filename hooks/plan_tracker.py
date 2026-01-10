@@ -68,6 +68,13 @@ NON_ACTIONABLE_SECTION_KEYWORDS = [
     "security issues",
     "maintainability issues",
     "cross-cutting concerns",
+    # Also mark audit-style sections as non-actionable
+    "shared libraries",
+    "shared components",
+    "api routes",
+    "/lib",
+    "/components",
+    "/api",
 ]
 
 
