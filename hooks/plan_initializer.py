@@ -79,14 +79,14 @@ def get_plan_summary(plan_state: dict) -> str:
     name = plan_state.get("name", "Unnamed Plan")
 
     if not items:
-        return f"Plan: {name}\nNo items yet. Use TodoWrite to add tasks."
+        return f"📋 Plan: {name}\nNo items yet. Use TodoWrite to add tasks."
 
     completed = sum(1 for i in items if i.get("status") in ["completed", "done"])
     total = len(items)
     progress_pct = (completed / total) * 100 if total else 0
 
     summary = [
-        f"Plan: {name}",
+        f"📋 Plan: {name}",
         f"Progress: {completed}/{total} ({progress_pct:.0f}%)",
         "",
         "Items:"
@@ -96,23 +96,20 @@ def get_plan_summary(plan_state: dict) -> str:
         status = item.get("status", "pending")
         task = item.get("task", "Unknown")
         if status in ["completed", "done"]:
-            summary.append(f"  [x] {i}. {task}")
+            summary.append(f"  ✅ {i}. {task}")
         elif status == "in_progress":
-            summary.append(f"  [~] {i}. {task}")
+            summary.append(f"  🔄 {i}. {task}")
         else:
-            summary.append(f"  [ ] {i}. {task}")
+            summary.append(f"  ⬜ {i}. {task}")
 
     return "\n".join(summary)
 
 
-def output_hook_response(continue_execution: bool = True, system_message: str = None,
-                          suppress_prompt: bool = False):
+def output_hook_response(continue_execution: bool = True, message: str = None):
     """Output JSON response for hook system."""
     response = {"continue": continue_execution}
-    if system_message:
-        response["systemMessage"] = system_message
-    if suppress_prompt:
-        response["suppressPrompt"] = True
+    if message:
+        response["message"] = message  # Use 'message' to show to user (not 'systemMessage')
     print(json.dumps(response))
 
 
@@ -149,28 +146,28 @@ def main():
             if save_plan_state(plan_state):
                 output_hook_response(
                     True,
-                    f"New plan initialized: **{plan_name}**\n\n"
+                    message=f"📋 New plan initialized: **{plan_name}**\n\n"
                     f"Use TodoWrite to add tasks that will be tracked.\n"
                     f"Stop will be blocked until all tasks are completed.\n"
                     f"Use `/clearplan` to remove the plan or `/showplan` to see status."
                 )
             else:
-                output_hook_response(True, "Failed to initialize plan.")
+                output_hook_response(True, message="❌ Failed to initialize plan.")
             sys.exit(0)
 
         if prompt_lower in ["/clearplan", "/clear-plan", "/cleartasks"]:
             log_debug("Clearing plan")
             if clear_plan_state():
-                output_hook_response(True, "Plan cleared. Stop verification disabled.")
+                output_hook_response(True, message="🗑️ Plan cleared. Stop verification disabled.")
             else:
-                output_hook_response(True, "Failed to clear plan.")
+                output_hook_response(True, message="❌ Failed to clear plan.")
             sys.exit(0)
 
         if prompt_lower in ["/showplan", "/show-plan", "/planstatus", "/plan-status"]:
             log_debug("Showing plan status")
             plan_state = load_plan_state()
             summary = get_plan_summary(plan_state)
-            output_hook_response(True, summary)
+            output_hook_response(True, message=summary)
             sys.exit(0)
 
         output_hook_response(True)
