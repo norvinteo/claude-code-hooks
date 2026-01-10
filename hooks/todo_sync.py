@@ -3,13 +3,14 @@
 Todo Sync Hook - Syncs TodoWrite completions to plan_state.json.
 
 Triggers on: PostToolUse with matcher "TodoWrite"
-Purpose: Match completed todos to plan items using Claude Haiku 4.5
+Purpose: Match completed todos to plan items using smart keyword matching
+         (No API calls - works with Claude subscription)
 """
 
 import json
 import sys
 import os
-import subprocess
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,33 @@ from pathlib import Path
 HOOKS_DIR = Path("{{PROJECT_DIR}}/.claude/hooks")
 PLAN_STATE_FILE = HOOKS_DIR / "plan_state.json"
 DEBUG_LOG = Path("{{PROJECT_DIR}}/progress/.todo_sync_debug.log")
+
+# Stop words to filter out when extracting keywords
+STOP_WORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "must", "shall", "can", "need", "to", "of",
+    "in", "for", "on", "with", "at", "by", "from", "as", "into", "through",
+    "during", "before", "after", "above", "below", "between", "under", "again",
+    "further", "then", "once", "here", "there", "when", "where", "why", "how",
+    "all", "each", "few", "more", "most", "other", "some", "such", "no", "nor",
+    "not", "only", "own", "same", "so", "than", "too", "very", "just", "and",
+    "but", "if", "or", "because", "until", "while", "this", "that", "these",
+    "those", "it", "its", "i", "me", "my", "we", "our", "you", "your", "he",
+    "him", "his", "she", "her", "they", "them", "their", "what", "which", "who"
+}
+
+# Synonym mappings for common action words
+SYNONYMS = {
+    "create": ["add", "make", "build", "implement", "set up", "setup", "write"],
+    "update": ["modify", "change", "edit", "revise", "fix", "adjust"],
+    "delete": ["remove", "drop", "clear", "clean"],
+    "complete": ["finish", "done", "completed", "finalize"],
+    "push": ["upload", "deploy", "publish", "commit"],
+    "repository": ["repo", "github", "git"],
+    "install": ["setup", "set up", "configure", "initialize", "init"],
+    "test": ["verify", "check", "validate", "run tests"],
+}
 
 
 def log_debug(message: str):
@@ -68,14 +96,34 @@ def save_plan_state(state: dict):
         return False
 
 
-def match_with_haiku(todo_content: str, plan_items: list) -> int | None:
-    """Use Claude Haiku 4.5 via curl to match a todo to a plan item."""
+def extract_keywords(text: str) -> set:
+    """Extract meaningful keywords from text, filtering stop words."""
+    # Normalize: lowercase, replace punctuation with spaces
+    normalized = re.sub(r'[^\w\s]', ' ', text.lower())
+    words = normalized.split()
 
-    # Get API key from environment
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        log_debug("ANTHROPIC_API_KEY not set, skipping Haiku matching")
-        return None
+    # Filter stop words and short words
+    keywords = {w for w in words if w not in STOP_WORDS and len(w) > 2}
+    return keywords
+
+
+def expand_with_synonyms(keywords: set) -> set:
+    """Expand keywords with their synonyms."""
+    expanded = set(keywords)
+    for word in keywords:
+        # Check if word is a key in synonyms
+        if word in SYNONYMS:
+            expanded.update(SYNONYMS[word])
+        # Check if word is a value in synonyms
+        for key, values in SYNONYMS.items():
+            if word in values:
+                expanded.add(key)
+                expanded.update(values)
+    return expanded
+
+
+def smart_match(todo_content: str, plan_items: list) -> int | None:
+    """Match todo to plan item using keyword overlap with synonym expansion."""
 
     # Filter to only pending items
     pending_items = [
@@ -87,83 +135,51 @@ def match_with_haiku(todo_content: str, plan_items: list) -> int | None:
         log_debug("No pending plan items to match against")
         return None
 
-    # Build the prompt
-    items_text = "\n".join([
-        f"{i}: {item.get('task', '')}"
-        for i, item in pending_items
-    ])
+    # Extract and expand todo keywords
+    todo_keywords = extract_keywords(todo_content)
+    todo_expanded = expand_with_synonyms(todo_keywords)
 
-    prompt = f"""Match the completed todo to the most relevant plan item.
+    log_debug(f"Todo keywords: {todo_keywords}")
+    log_debug(f"Todo expanded: {todo_expanded}")
 
-Completed Todo: "{todo_content}"
+    best_match = None
+    best_score = 0.0
+    threshold = 0.3  # Minimum overlap ratio to consider a match
 
-Plan Items (index: task):
-{items_text}
+    for orig_idx, item in pending_items:
+        task = item.get("task", "")
 
-Reply with ONLY the index number of the best matching plan item, or "none" if no item matches.
-Consider semantic meaning - e.g. "Push files to GitHub" matches "Files uploaded"."""
+        # Extract and expand plan item keywords
+        plan_keywords = extract_keywords(task)
+        plan_expanded = expand_with_synonyms(plan_keywords)
 
-    # Build request payload
-    payload = {
-        "model": "claude-haiku-4-5-20250110",
-        "max_tokens": 10,
-        "messages": [{"role": "user", "content": prompt}]
-    }
+        # Calculate overlap score
+        if not plan_expanded or not todo_expanded:
+            continue
 
-    try:
-        # Call Anthropic API via curl
-        result = subprocess.run(
-            [
-                "curl", "-s", "-X", "POST",
-                "https://api.anthropic.com/v1/messages",
-                "-H", "Content-Type: application/json",
-                "-H", f"x-api-key: {api_key}",
-                "-H", "anthropic-version: 2023-06-01",
-                "-d", json.dumps(payload)
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
+        # Jaccard-like similarity: intersection / union
+        intersection = todo_expanded & plan_expanded
+        union = todo_expanded | plan_expanded
 
-        if result.returncode != 0:
-            log_debug(f"curl failed: {result.stderr}")
-            return None
+        if union:
+            score = len(intersection) / len(union)
 
-        response = json.loads(result.stdout)
+            # Bonus: if all plan keywords are in todo (task completed)
+            if plan_keywords and plan_keywords.issubset(todo_expanded):
+                score += 0.2
 
-        if "error" in response:
-            log_debug(f"API error: {response['error']}")
-            return None
+            log_debug(f"Match score for '{task[:40]}': {score:.2f} (overlap: {intersection})")
 
-        answer = response["content"][0]["text"].strip().lower()
-        log_debug(f"Haiku response for '{todo_content[:30]}': {answer}")
+            if score > best_score and score >= threshold:
+                best_score = score
+                best_match = orig_idx
 
-        if answer == "none":
-            return None
+    if best_match is not None:
+        log_debug(f"Best match: index {best_match} with score {best_score:.2f}")
+    else:
+        log_debug("No match found above threshold")
 
-        # Parse the index
-        try:
-            matched_index = int(answer)
-            # Find the original index from pending_items
-            for orig_idx, item in pending_items:
-                if orig_idx == matched_index:
-                    return orig_idx
-            # If matched_index is position in pending list, convert to original
-            if 0 <= matched_index < len(pending_items):
-                return pending_items[matched_index][0]
-        except ValueError:
-            log_debug(f"Could not parse Haiku response as index: {answer}")
-            return None
-
-    except subprocess.TimeoutExpired:
-        log_debug("Haiku API call timed out")
-        return None
-    except Exception as e:
-        log_debug(f"Haiku API error: {e}")
-        return None
-
-    return None
+    return best_match
 
 
 def main():
@@ -240,15 +256,15 @@ def main():
                         changes_made += 1
                         log_debug(f"Exact match - marked complete: {content[:50]}")
                 else:
-                    # No exact match - try Haiku for semantic match on completed todos
+                    # No exact match - try smart keyword matching on completed todos
                     if status == "completed":
-                        match_index = match_with_haiku(content, plan_items)
+                        match_index = smart_match(content, plan_items)
                         if match_index is not None:
                             if plan_items[match_index].get("status") != "completed":
                                 plan_items[match_index]["status"] = "completed"
                                 plan_items[match_index]["completed_at"] = datetime.now().isoformat()
                                 changes_made += 1
-                                log_debug(f"Haiku match - marked complete: {plan_items[match_index]['task'][:50]}")
+                                log_debug(f"Smart match - marked complete: {plan_items[match_index]['task'][:50]}")
                         else:
                             # No match found - add as new completed item
                             new_id = max((item.get("id", 0) for item in plan_items), default=0) + 1
