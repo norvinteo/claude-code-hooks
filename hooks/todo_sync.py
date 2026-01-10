@@ -14,12 +14,14 @@ from datetime import datetime
 from pathlib import Path
 from difflib import SequenceMatcher
 
+# Configuration
 HOOKS_DIR = Path("{{PROJECT_DIR}}/.claude/hooks")
 PLAN_STATE_FILE = HOOKS_DIR / "plan_state.json"
 DEBUG_LOG = Path("{{PROJECT_DIR}}/progress/.todo_sync_debug.log")
 
 
 def log_debug(message: str):
+    """Log debug message to file."""
     try:
         DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(DEBUG_LOG, "a") as f:
@@ -29,6 +31,7 @@ def log_debug(message: str):
 
 
 def load_config() -> dict:
+    """Load config from file."""
     config_file = HOOKS_DIR / "config.json"
     try:
         if config_file.exists():
@@ -40,6 +43,7 @@ def load_config() -> dict:
 
 
 def load_plan_state() -> dict:
+    """Load plan state from file."""
     try:
         if PLAN_STATE_FILE.exists():
             with open(PLAN_STATE_FILE, "r") as f:
@@ -50,6 +54,7 @@ def load_plan_state() -> dict:
 
 
 def save_plan_state(state: dict):
+    """Save plan state to file."""
     try:
         HOOKS_DIR.mkdir(parents=True, exist_ok=True)
         state["updated_at"] = datetime.now().isoformat()
@@ -65,29 +70,79 @@ def save_plan_state(state: dict):
 
 
 def normalize_text(text: str) -> str:
-    text = re.sub(r'\*\*|__|`|#', '', text)
-    text = re.sub(r'[^\w\s]', ' ', text)
-    text = re.sub(r'\s+', ' ', text)
+    """Normalize text for comparison."""
+    # Remove markdown formatting, extra whitespace, punctuation
+    text = re.sub(r'\*\*|__|`|#', '', text)  # Remove markdown
+    text = re.sub(r'[^\w\s]', ' ', text)  # Remove punctuation
+    text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
     return text.lower().strip()
 
 
+def extract_keywords(text: str) -> set:
+    """Extract meaningful keywords from text."""
+    # Common stop words to ignore
+    stop_words = {
+        'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+        'should', 'may', 'might', 'must', 'shall', 'can', 'to', 'of', 'in',
+        'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through',
+        'during', 'before', 'after', 'above', 'below', 'between', 'under',
+        'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where',
+        'why', 'how', 'all', 'each', 'few', 'more', 'most', 'other', 'some',
+        'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than',
+        'too', 'very', 'just', 'and', 'but', 'if', 'or', 'because', 'until',
+        'while', 'this', 'that', 'these', 'those', 'it', 'its'
+    }
+    words = normalize_text(text).split()
+    return {w for w in words if len(w) > 2 and w not in stop_words}
+
+
 def similarity(a: str, b: str) -> float:
+    """Calculate similarity ratio between two strings."""
     return SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio()
 
 
+def keyword_overlap(a: str, b: str) -> float:
+    """Calculate keyword overlap ratio."""
+    keywords_a = extract_keywords(a)
+    keywords_b = extract_keywords(b)
+
+    if not keywords_a or not keywords_b:
+        return 0.0
+
+    # How many keywords from the smaller set appear in the larger?
+    intersection = keywords_a & keywords_b
+    smaller_set = min(len(keywords_a), len(keywords_b))
+
+    return len(intersection) / smaller_set if smaller_set > 0 else 0.0
+
+
 def match_todo_to_plan_item(todo_content: str, plan_items: list) -> int | None:
+    """Find the best matching plan item for a todo."""
     best_match = None
     best_score = 0.0
-    threshold = 0.6
+    threshold = 0.5  # Lowered threshold
 
     for i, item in enumerate(plan_items):
-        task = item.get("task", "")
-        score = similarity(todo_content, task)
+        if item.get("status") == "completed":
+            continue  # Skip already completed items
 
+        task = item.get("task", "")
+
+        # Calculate multiple similarity metrics
+        seq_score = similarity(todo_content, task)
+        kw_score = keyword_overlap(todo_content, task)
+
+        # Use the higher of the two scores
+        score = max(seq_score, kw_score)
+
+        # Boost if one contains the other
         if normalize_text(task) in normalize_text(todo_content):
             score = max(score, 0.8)
         if normalize_text(todo_content) in normalize_text(task):
             score = max(score, 0.8)
+
+        log_debug(f"  Comparing '{todo_content[:30]}' vs '{task[:30]}' -> seq={seq_score:.2f}, kw={kw_score:.2f}, final={score:.2f}")
 
         if score > best_score and score >= threshold:
             best_score = score
@@ -95,12 +150,16 @@ def match_todo_to_plan_item(todo_content: str, plan_items: list) -> int | None:
 
     if best_match is not None:
         log_debug(f"Matched '{todo_content[:50]}' to '{plan_items[best_match]['task'][:50]}' (score: {best_score:.2f})")
+    else:
+        log_debug(f"No match for '{todo_content[:50]}' (best score < {threshold})")
 
     return best_match
 
 
 def main():
+    """Main entry point for the hook."""
     try:
+        # Check if plan verification is enabled
         config = load_config()
         env_enabled = os.environ.get("CLAUDE_PLAN_VERIFICATION", "").lower() == "true"
         config_enabled = config.get("plan_verification", False)
@@ -109,10 +168,12 @@ def main():
             log_debug("Plan verification disabled, skipping todo sync")
             sys.exit(0)
 
+        # Read JSON input from stdin
         data = json.load(sys.stdin)
 
         log_debug(f"Todo sync triggered: {json.dumps(data, indent=2)[:500]}")
 
+        # Extract todos from tool input
         tool_input = data.get("tool_input", {})
         todos = tool_input.get("todos", [])
 
@@ -120,6 +181,7 @@ def main():
             log_debug("No todos in tool input")
             sys.exit(0)
 
+        # Load plan state
         plan_state = load_plan_state()
         plan_items = plan_state.get("items", [])
 
@@ -127,8 +189,10 @@ def main():
             log_debug("No plan items to match against")
             sys.exit(0)
 
+        # Track changes
         changes_made = 0
 
+        # Process each completed todo
         for todo in todos:
             if todo.get("status") == "completed":
                 content = todo.get("content", "")
@@ -141,6 +205,7 @@ def main():
                         changes_made += 1
                         log_debug(f"Marked plan item {match_index + 1} as completed: {plan_items[match_index]['task'][:50]}")
 
+        # Save if changes were made
         if changes_made > 0:
             plan_state["items"] = plan_items
             save_plan_state(plan_state)
