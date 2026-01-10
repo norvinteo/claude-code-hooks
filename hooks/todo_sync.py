@@ -3,16 +3,15 @@
 Todo Sync Hook - Syncs TodoWrite completions to plan_state.json.
 
 Triggers on: PostToolUse with matcher "TodoWrite"
-Purpose: Match completed todos to plan items and update their status
+Purpose: Match completed todos to plan items using Claude Haiku 4.5
 """
 
 import json
 import sys
 import os
-import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
-from difflib import SequenceMatcher
 
 # Configuration
 HOOKS_DIR = Path("{{PROJECT_DIR}}/.claude/hooks")
@@ -69,91 +68,102 @@ def save_plan_state(state: dict):
         return False
 
 
-def normalize_text(text: str) -> str:
-    """Normalize text for comparison."""
-    # Remove markdown formatting, extra whitespace, punctuation
-    text = re.sub(r'\*\*|__|`|#', '', text)  # Remove markdown
-    text = re.sub(r'[^\w\s]', ' ', text)  # Remove punctuation
-    text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
-    return text.lower().strip()
+def match_with_haiku(todo_content: str, plan_items: list) -> int | None:
+    """Use Claude Haiku 4.5 via curl to match a todo to a plan item."""
 
+    # Get API key from environment
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        log_debug("ANTHROPIC_API_KEY not set, skipping Haiku matching")
+        return None
 
-def extract_keywords(text: str) -> set:
-    """Extract meaningful keywords from text."""
-    # Common stop words to ignore
-    stop_words = {
-        'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-        'should', 'may', 'might', 'must', 'shall', 'can', 'to', 'of', 'in',
-        'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through',
-        'during', 'before', 'after', 'above', 'below', 'between', 'under',
-        'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where',
-        'why', 'how', 'all', 'each', 'few', 'more', 'most', 'other', 'some',
-        'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than',
-        'too', 'very', 'just', 'and', 'but', 'if', 'or', 'because', 'until',
-        'while', 'this', 'that', 'these', 'those', 'it', 'its'
+    # Filter to only pending items
+    pending_items = [
+        (i, item) for i, item in enumerate(plan_items)
+        if item.get("status") != "completed"
+    ]
+
+    if not pending_items:
+        log_debug("No pending plan items to match against")
+        return None
+
+    # Build the prompt
+    items_text = "\n".join([
+        f"{i}: {item.get('task', '')}"
+        for i, item in pending_items
+    ])
+
+    prompt = f"""Match the completed todo to the most relevant plan item.
+
+Completed Todo: "{todo_content}"
+
+Plan Items (index: task):
+{items_text}
+
+Reply with ONLY the index number of the best matching plan item, or "none" if no item matches.
+Consider semantic meaning - e.g. "Push files to GitHub" matches "Files uploaded"."""
+
+    # Build request payload
+    payload = {
+        "model": "claude-haiku-4-5-20250110",
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": prompt}]
     }
-    words = normalize_text(text).split()
-    return {w for w in words if len(w) > 2 and w not in stop_words}
 
+    try:
+        # Call Anthropic API via curl
+        result = subprocess.run(
+            [
+                "curl", "-s", "-X", "POST",
+                "https://api.anthropic.com/v1/messages",
+                "-H", "Content-Type: application/json",
+                "-H", f"x-api-key: {api_key}",
+                "-H", "anthropic-version: 2023-06-01",
+                "-d", json.dumps(payload)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
 
-def similarity(a: str, b: str) -> float:
-    """Calculate similarity ratio between two strings."""
-    return SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio()
+        if result.returncode != 0:
+            log_debug(f"curl failed: {result.stderr}")
+            return None
 
+        response = json.loads(result.stdout)
 
-def keyword_overlap(a: str, b: str) -> float:
-    """Calculate keyword overlap ratio."""
-    keywords_a = extract_keywords(a)
-    keywords_b = extract_keywords(b)
+        if "error" in response:
+            log_debug(f"API error: {response['error']}")
+            return None
 
-    if not keywords_a or not keywords_b:
-        return 0.0
+        answer = response["content"][0]["text"].strip().lower()
+        log_debug(f"Haiku response for '{todo_content[:30]}': {answer}")
 
-    # How many keywords from the smaller set appear in the larger?
-    intersection = keywords_a & keywords_b
-    smaller_set = min(len(keywords_a), len(keywords_b))
+        if answer == "none":
+            return None
 
-    return len(intersection) / smaller_set if smaller_set > 0 else 0.0
+        # Parse the index
+        try:
+            matched_index = int(answer)
+            # Find the original index from pending_items
+            for orig_idx, item in pending_items:
+                if orig_idx == matched_index:
+                    return orig_idx
+            # If matched_index is position in pending list, convert to original
+            if 0 <= matched_index < len(pending_items):
+                return pending_items[matched_index][0]
+        except ValueError:
+            log_debug(f"Could not parse Haiku response as index: {answer}")
+            return None
 
+    except subprocess.TimeoutExpired:
+        log_debug("Haiku API call timed out")
+        return None
+    except Exception as e:
+        log_debug(f"Haiku API error: {e}")
+        return None
 
-def match_todo_to_plan_item(todo_content: str, plan_items: list) -> int | None:
-    """Find the best matching plan item for a todo."""
-    best_match = None
-    best_score = 0.0
-    threshold = 0.5  # Lowered threshold
-
-    for i, item in enumerate(plan_items):
-        if item.get("status") == "completed":
-            continue  # Skip already completed items
-
-        task = item.get("task", "")
-
-        # Calculate multiple similarity metrics
-        seq_score = similarity(todo_content, task)
-        kw_score = keyword_overlap(todo_content, task)
-
-        # Use the higher of the two scores
-        score = max(seq_score, kw_score)
-
-        # Boost if one contains the other
-        if normalize_text(task) in normalize_text(todo_content):
-            score = max(score, 0.8)
-        if normalize_text(todo_content) in normalize_text(task):
-            score = max(score, 0.8)
-
-        log_debug(f"  Comparing '{todo_content[:30]}' vs '{task[:30]}' -> seq={seq_score:.2f}, kw={kw_score:.2f}, final={score:.2f}")
-
-        if score > best_score and score >= threshold:
-            best_score = score
-            best_match = i
-
-    if best_match is not None:
-        log_debug(f"Matched '{todo_content[:50]}' to '{plan_items[best_match]['task'][:50]}' (score: {best_score:.2f})")
-    else:
-        log_debug(f"No match for '{todo_content[:50]}' (best score < {threshold})")
-
-    return best_match
+    return None
 
 
 def main():
@@ -196,7 +206,7 @@ def main():
         for todo in todos:
             if todo.get("status") == "completed":
                 content = todo.get("content", "")
-                match_index = match_todo_to_plan_item(content, plan_items)
+                match_index = match_with_haiku(content, plan_items)
 
                 if match_index is not None:
                     if plan_items[match_index].get("status") != "completed":
