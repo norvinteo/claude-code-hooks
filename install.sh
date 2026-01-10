@@ -60,6 +60,7 @@ HOOK_FILES=(
     "completion_validator.py"
     "session_cleanup.py"
     "agent_complete_notify.py"
+    "auto_continue.sh"
 )
 
 # Download hook files
@@ -215,6 +216,11 @@ echo "Usage:"
 echo "  /plan <task name>     - Start a new plan"
 echo "  /showplan             - Show current plan status"
 echo "  /clearplan            - Clear the plan"
+echo ""
+echo -e "${YELLOW}Autonomous Mode (tmux):${NC}"
+echo "  1. Start Claude in tmux:  tmux new -s claude"
+echo "  2. In another terminal:   $TARGET_HOOKS/auto_continue.sh claude"
+echo "  The script auto-sends 'c' when stop is blocked by incomplete tasks."
 echo ""
 echo "Configuration: $TARGET_HOOKS/config.json"
 echo ""
