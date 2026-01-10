@@ -44,6 +44,7 @@ SYNONYMS = {
     "repository": ["repo", "github", "git"],
     "install": ["setup", "set up", "configure", "initialize", "init"],
     "test": ["verify", "check", "validate", "run tests"],
+    "authentication": ["auth", "login", "signin", "sign-in"],
 }
 
 
@@ -96,14 +97,38 @@ def save_plan_state(state: dict):
         return False
 
 
+def stem_word(word: str) -> str:
+    """Simple stemming - remove common suffixes."""
+    if len(word) >= 5:
+        if word.endswith('ing'):
+            return word[:-3]
+        if word.endswith('ied'):
+            return word[:-3] + 'y'  # verified -> verify
+        if word.endswith('ed'):
+            if word[-3] == word[-4]:  # doubled consonant: stopped -> stop
+                return word[:-3]
+            return word[:-2] if not word.endswith('eed') else word[:-1]
+        if word.endswith('tion'):
+            return word[:-4] + 'te'  # authentication -> authenticate
+        if word.endswith('ated'):
+            return word[:-1]  # created -> create
+    return word
+
+
 def extract_keywords(text: str) -> set:
     """Extract meaningful keywords from text, filtering stop words."""
     # Normalize: lowercase, replace punctuation with spaces
     normalized = re.sub(r'[^\w\s]', ' ', text.lower())
     words = normalized.split()
 
-    # Filter stop words and short words
-    keywords = {w for w in words if w not in STOP_WORDS and len(w) > 2}
+    # Filter stop words and short words, apply stemming
+    keywords = set()
+    for w in words:
+        if w not in STOP_WORDS and len(w) > 2:
+            keywords.add(w)
+            stemmed = stem_word(w)
+            if stemmed != w and len(stemmed) > 2:
+                keywords.add(stemmed)
     return keywords
 
 
@@ -144,7 +169,7 @@ def smart_match(todo_content: str, plan_items: list) -> int | None:
 
     best_match = None
     best_score = 0.0
-    threshold = 0.3  # Minimum overlap ratio to consider a match
+    threshold = 0.25  # Minimum overlap ratio to consider a match
 
     for orig_idx, item in pending_items:
         task = item.get("task", "")
