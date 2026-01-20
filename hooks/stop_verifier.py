@@ -8,10 +8,8 @@ Purpose: Check plan_state.json for incomplete items and BLOCK stop until done.
 Behavior:
 - If plan has incomplete items → BLOCK stop (continue=False)
 - If all items complete → Allow stop
-- If user uses @force-stop → Allow stop anyway
+- If user uses /force-stop → Allow stop anyway
 - If no plan → Allow stop
-
-Note: Uses @ prefix to avoid conflicts with Claude Code's skill system (/) and bash history (!).
 """
 
 import json
@@ -28,6 +26,13 @@ VERIFICATION_LOG = HOOKS_DIR.parent / "progress/plan_verifications.log"
 
 # Loop prevention settings (can be overridden in config.json)
 DEFAULT_MAX_STOP_ATTEMPTS = 5
+
+# Import shared helper for cross-session plan tracking
+try:
+    from plan_session_helper import load_plan_state_with_fallback
+    HAS_HELPER = True
+except ImportError:
+    HAS_HELPER = False
 
 
 def get_session_files(session_id: str) -> tuple:
@@ -132,8 +137,8 @@ def check_force_stop(transcript_path: str) -> bool:
         recent_content = content[-5000:] if len(content) > 5000 else content
 
         force_patterns = [
-            r"@force-stop",
-            r"@force stop",
+            r"/force-stop",
+            r"/force stop",
             r"force stop",
             r"stop anyway",
             r"ignore incomplete",
@@ -236,8 +241,13 @@ def main():
             output_hook_response(True, f"⚠️ Allowed stop after {attempts} blocked attempts to prevent infinite loop.")
             sys.exit(0)
 
-        # Load plan state
-        plan_state = load_plan_state(plan_state_file)
+        # Load plan state with fallback to active plan from other sessions
+        if HAS_HELPER:
+            plan_state, plan_state_file, is_fallback = load_plan_state_with_fallback(session_id)
+            if is_fallback:
+                log_debug(f"Using fallback plan from {plan_state.get('session_id') if plan_state else 'unknown'}")
+        else:
+            plan_state = load_plan_state(plan_state_file)
 
         if not plan_state or not plan_state.get("items"):
             log_debug("No plan state found, allowing stop")
@@ -285,7 +295,7 @@ Remaining items:
 
 👉 NEXT TASK: "{next_task}"
 
-Type "c" to continue, or "@force-stop" to stop anyway."""
+Type "c" to continue, or "force stop" to stop anyway."""
 
         # BLOCK the stop and prompt continuation
         output_hook_response(False, system_msg)

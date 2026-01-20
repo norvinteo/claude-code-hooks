@@ -24,7 +24,7 @@ from pathlib import Path
 
 # Configuration
 HOOKS_DIR = Path(__file__).parent
-PROJECT_DIR = HOOKS_DIR.parent.parent  # Assumes hooks are in .claude/hooks/
+PROJECT_DIR = Path("/Users/norvin/Cursor/bebo-studio/bebo-work")
 DEBUG_LOG = HOOKS_DIR.parent / "progress/.completion_validator_debug.log"
 VALIDATION_LOG = HOOKS_DIR.parent / "progress/validation_results.log"
 
@@ -43,19 +43,19 @@ def get_session_files(session_id: str) -> tuple:
 DEFAULT_VALIDATIONS = [
     {
         "name": "TypeScript Check",
-        "command": "npm run tsc --noEmit",
+        "command": "bun run tsc --noEmit",
         "timeout": 120,
         "required": True
     },
     {
         "name": "ESLint",
-        "command": "npm run lint",
+        "command": "bun run lint",
         "timeout": 60,
         "required": False  # Warnings OK
     },
     {
         "name": "Build",
-        "command": "npm run build",
+        "command": "bun run build",
         "timeout": 300,
         "required": True
     }

@@ -16,23 +16,30 @@ from pathlib import Path
 # Configuration
 HOOKS_DIR = Path(__file__).parent
 DEBUG_LOG = HOOKS_DIR.parent / "progress/.plan_tracker_debug.log"
+PROJECT_ROOT = HOOKS_DIR.parent.parent
+PROJECT_NAME = PROJECT_ROOT.name  # "bebo-studio"
 
 # Plan file locations (both user-level and project-level)
 PLAN_DIRS = [
-    Path.home() / ".claude/plans",  # User-level plans
-    HOOKS_DIR.parent / "plans",      # Project-level plans
+    Path.home() / ".claude/plans",                          # User-level plans
+    HOOKS_DIR.parent / "plans", # Project-level plans
 ]
 
+# Import shared helper
+try:
+    from plan_session_helper import get_session_files, save_active_plan
+except ImportError:
+    # Fallback if helper not available
+    def get_session_files(session_id: str) -> tuple:
+        """Get session-scoped file paths."""
+        sessions_dir = HOOKS_DIR / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        plan_state_file = sessions_dir / f"{session_id}_plan_state.json"
+        stop_attempts_file = sessions_dir / f"{session_id}_stop_attempts.json"
+        return plan_state_file, stop_attempts_file
 
-def get_session_files(session_id: str) -> tuple:
-    """Get session-scoped file paths."""
-    sessions_dir = HOOKS_DIR / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-
-    plan_state_file = sessions_dir / f"{session_id}_plan_state.json"
-    stop_attempts_file = sessions_dir / f"{session_id}_stop_attempts.json"
-
-    return plan_state_file, stop_attempts_file
+    def save_active_plan(session_id, plan_file=None, name=None):
+        pass
 
 
 def log_debug(message: str):
@@ -271,13 +278,20 @@ def load_plan_state(plan_state_file: Path) -> dict:
 
 
 def save_plan_state(state: dict, plan_state_file: Path):
-    """Save plan state to file."""
+    """Save plan state to file and update active plan reference."""
     try:
         plan_state_file.parent.mkdir(parents=True, exist_ok=True)
         state["updated_at"] = datetime.now().isoformat()
 
         with open(plan_state_file, "w") as f:
             json.dump(state, f, indent=2)
+
+        # Update active plan reference
+        save_active_plan(
+            session_id=state.get("session_id"),
+            plan_file=state.get("plan_file"),
+            name=state.get("name")
+        )
 
         log_debug(f"Saved plan state to {plan_state_file.name}: {len(state.get('items', []))} items")
         return True
@@ -329,6 +343,7 @@ def process_plan_file(file_path: str, session_id: str, plan_state_file: Path) ->
     # Create new plan state
     plan_state = {
         "session_id": session_id,
+        "project_name": PROJECT_NAME,
         "plan_source": "file",
         "plan_file": file_path,
         "name": plan_data.get("name", "Unnamed Plan"),

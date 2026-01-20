@@ -6,8 +6,6 @@ Triggers on: PrePromptSubmit
 Purpose: If previous stop was blocked, remind Claude to continue working.
 
 This works with stop_verifier.py to create a more robust continuation loop.
-
-Note: Uses @ prefix for commands to avoid conflicts with Claude Code's skill system (/).
 """
 
 import json
@@ -95,8 +93,8 @@ def main():
         session_id = data.get("session_id", "")
         prompt = data.get("prompt", "").strip().lower()
 
-        # Don't interfere with explicit commands (@ prefix for plan commands)
-        if prompt.startswith("@"):
+        # Don't interfere with explicit commands
+        if prompt.startswith("/"):
             output_hook_response(True)
             sys.exit(0)
 
@@ -123,7 +121,7 @@ def main():
 
                 # Inject a reminder
                 reminder = (
-                    f"\ud83d\udccb Plan progress: {completed}/{total} complete. "
+                    f"📋 Plan progress: {completed}/{total} complete. "
                     f"Continue with: \"{next_task[:60]}{'...' if len(next_task) > 60 else ''}\""
                 )
 

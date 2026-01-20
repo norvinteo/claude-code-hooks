@@ -16,13 +16,14 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-# Configuration - paths relative to this script
+# Configuration
 HOOKS_DIR = Path(__file__).parent
 ARCHIVE_DIR = HOOKS_DIR / "archive"
-CONTINUATIONS_DIR = HOOKS_DIR.parent / "continuations"
-DEBUG_LOG = HOOKS_DIR.parent.parent / "progress" / ".session_cleanup_debug.log"
-SESSION_HISTORY = HOOKS_DIR.parent.parent / "progress" / "session_history.json"
-DAILY_PROGRESS_DIR = HOOKS_DIR.parent.parent / "progress" / "daily"
+CONTINUATIONS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/continuations")
+DEBUG_LOG = HOOKS_DIR.parent / "progress/.session_cleanup_debug.log"
+SESSION_HISTORY = HOOKS_DIR.parent / "progress/session_history.json"
+DAILY_PROGRESS_DIR = HOOKS_DIR.parent / "progress/daily"
+COST_LOG = HOOKS_DIR.parent / "progress/api_costs.json"
 
 
 def get_session_files(session_id: str) -> tuple:
@@ -130,6 +131,27 @@ def update_session_history(session_id: str, plan_state: dict, archive_path: str)
         log_debug(f"Error updating session history: {e}")
 
 
+def get_session_cost_data(session_id: str) -> dict:
+    """Get actual cost data from api_costs.json for a session."""
+    try:
+        if COST_LOG.exists():
+            with open(COST_LOG, "r") as f:
+                cost_data = json.load(f)
+            sessions = cost_data.get("sessions", {})
+            if session_id in sessions:
+                session_cost = sessions[session_id]
+                log_debug(f"Found cost data for session {session_id}: {session_cost}")
+                return {
+                    "cost": session_cost.get("total_cost", 0),
+                    "input_tokens": session_cost.get("input_tokens", 0),
+                    "output_tokens": session_cost.get("output_tokens", 0),
+                    "tool_calls": session_cost.get("tool_calls", 0)
+                }
+    except Exception as e:
+        log_debug(f"Error reading cost data: {e}")
+    return None
+
+
 def log_to_daily_progress(plan_state: dict, session_id: str):
     """Log completed session to daily progress file."""
     try:
@@ -150,10 +172,23 @@ def log_to_daily_progress(plan_state: dict, session_id: str):
 
         # Get plan metadata
         plan_name = plan_state.get("name", "Unnamed Session")
-        cost = plan_state.get("accumulated_cost", 0)
-        input_tokens = plan_state.get("total_input_tokens", 0)
-        output_tokens = plan_state.get("total_output_tokens", 0)
-        tool_calls = plan_state.get("tool_calls", 0)
+
+        # Get REAL cost data from api_costs.json instead of stale plan state
+        cost_data = get_session_cost_data(session_id)
+        if cost_data:
+            cost = cost_data["cost"]
+            input_tokens = cost_data["input_tokens"]
+            output_tokens = cost_data["output_tokens"]
+            tool_calls = cost_data["tool_calls"]
+            log_debug(f"Using real cost data: ${cost:.2f}, {input_tokens + output_tokens} tokens, {tool_calls} tools")
+        else:
+            # Fallback to plan state (may be stale)
+            cost = plan_state.get("accumulated_cost", 0)
+            input_tokens = plan_state.get("total_input_tokens", 0)
+            output_tokens = plan_state.get("total_output_tokens", 0)
+            tool_calls = plan_state.get("tool_calls", 0)
+            log_debug(f"Using plan state fallback: ${cost:.2f}, {input_tokens + output_tokens} tokens, {tool_calls} tools")
+
         created_at = plan_state.get("created_at", "")
 
         # Create daily progress file path
@@ -175,7 +210,7 @@ def log_to_daily_progress(plan_state: dict, session_id: str):
         entry_lines.append(f"\n### Completed ({len(completed_items)}/{len(items)})\n")
         for item in completed_items:
             task = item.get("task", item.get("content", "Unknown task"))
-            entry_lines.append(f"- [x] {task}\n")
+            entry_lines.append(f"- ✅ {task}\n")
 
         # Add pending items if any
         pending_items = [i for i in items if i.get("status") not in ["completed", "done"]]
@@ -184,7 +219,7 @@ def log_to_daily_progress(plan_state: dict, session_id: str):
             for item in pending_items:
                 task = item.get("task", item.get("content", "Unknown task"))
                 status = item.get("status", "pending")
-                icon = "[>]" if status == "in_progress" else "[ ]"
+                icon = "🔄" if status == "in_progress" else "⏳"
                 entry_lines.append(f"- {icon} {task}\n")
 
         # Write to daily file
@@ -421,12 +456,12 @@ def main():
             completed = sum(1 for i in items if i.get("status") in ["completed", "done"])
             incomplete = len(items) - completed
 
-            msg = f"Session archived: {completed}/{len(items)} items completed\n"
+            msg = f"📦 Session archived: {completed}/{len(items)} items completed\n"
             msg += f"Archive: {Path(archive_path).name if archive_path else 'None'}"
 
             if incomplete > 0:
-                msg += f"\n\nContinuation saved with {incomplete} pending tasks."
-                msg += f"\nNew sessions can continue with: `@continue {session_id[:8]}`"
+                msg += f"\n\n💾 Continuation saved with {incomplete} pending tasks."
+                msg += f"\nNew sessions can continue with: `/continue {session_id[:8]}`"
 
             output_hook_response(True, msg)
         else:

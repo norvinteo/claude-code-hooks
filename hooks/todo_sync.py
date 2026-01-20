@@ -18,6 +18,13 @@ from pathlib import Path
 HOOKS_DIR = Path(__file__).parent
 DEBUG_LOG = HOOKS_DIR.parent / "progress/.todo_sync_debug.log"
 
+# Import shared helper for cross-session plan tracking
+try:
+    from plan_session_helper import load_plan_state_with_fallback, save_active_plan
+    HAS_HELPER = True
+except ImportError:
+    HAS_HELPER = False
+
 # Stop words to filter out when extracting keywords
 STOP_WORDS = {
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -233,9 +240,6 @@ def main():
         data = json.load(sys.stdin)
         session_id = data.get("session_id", "default")
 
-        # Get session-scoped file paths
-        plan_state_file, _ = get_session_files(session_id)
-
         log_debug(f"Session {session_id}: Todo sync triggered")
 
         # Extract todos from tool input
@@ -246,11 +250,21 @@ def main():
             log_debug("No todos in tool input")
             sys.exit(0)
 
-        # Load plan state
-        plan_state = load_plan_state(plan_state_file)
-        plan_items = plan_state.get("items", [])
+        # Load plan state with fallback to active plan from other sessions
+        if HAS_HELPER:
+            plan_state, plan_state_file, is_fallback = load_plan_state_with_fallback(session_id)
+            if is_fallback:
+                log_debug(f"Session {session_id}: Using fallback plan from {plan_state.get('session_id')}")
+        else:
+            plan_state_file, _ = get_session_files(session_id)
+            plan_state = load_plan_state(plan_state_file)
 
         # Check if there's an active plan
+        if not plan_state:
+            log_debug(f"Session {session_id}: No active plan, skipping todo sync")
+            sys.exit(0)
+
+        plan_items = plan_state.get("items", [])
         has_active_plan = plan_state.get("name") or plan_state.get("session_id")
 
         if not has_active_plan:
