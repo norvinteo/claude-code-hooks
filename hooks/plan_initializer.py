@@ -3,16 +3,18 @@
 Plan Initializer Hook - Detects plan commands and initializes plan state.
 
 Triggers on: PrePromptSubmit
-Purpose: Detect /plan, /newplan, /clearplan commands and manage plan state.
+Purpose: Detect @plan, @newplan, @clearplan commands and manage plan state.
 
 Commands:
-- /plan <name>         - Initialize a new plan with given name
-- /newplan <name>      - Same as /plan
-- /clearplan           - Clear current plan state
-- /showplan            - Show current plan status
-- /continue            - List available session continuations
-- /continue <id>       - Continue from a previous session (use first 8 chars of session ID)
-- /continuations       - Alias for /continue
+- @plan <name>         - Initialize a new plan with given name
+- @newplan <name>      - Same as @plan
+- @clearplan           - Clear current plan state
+- @showplan            - Show current plan status
+- @continue            - List available session continuations
+- @continue <id>       - Continue from a previous session (use first 8 chars of session ID)
+- @continuations       - Alias for @continue
+
+Note: Uses @ prefix to avoid conflicts with Claude Code's skill system (/) and bash history (!).
 """
 
 import json
@@ -192,8 +194,8 @@ def format_continuations_message(continuations):
         msg += f"   Session: `{session_short}...` | Saved: {saved_at}\n\n"
 
     msg += "---\n"
-    msg += "To continue a session: `/continue {session_id_prefix}`\n"
-    msg += "Example: `/continue " + (continuations[0].get("session_id", "abc12345")[:8] if continuations else "abc12345") + "`\n"
+    msg += "To continue a session: `@continue {session_id_prefix}`\n"
+    msg += "Example: `@continue " + (continuations[0].get("session_id", "abc12345")[:8] if continuations else "abc12345") + "`\n"
 
     return msg
 
@@ -278,11 +280,11 @@ def main():
 
         log_debug(f"Session {session_id}: Received prompt: {prompt[:100]}...")
 
-        # Check for plan commands
+        # Check for plan commands (using @ prefix)
         prompt_lower = prompt.lower()
 
-        # /plan <name> or /newplan <name>
-        plan_match = re.match(r'^/(?:new)?plan\s+(.+)$', prompt, re.IGNORECASE)
+        # @plan <name> or @newplan <name>
+        plan_match = re.match(r'^@(?:new)?plan\s+(.+)$', prompt, re.IGNORECASE)
         if plan_match:
             plan_name = plan_match.group(1).strip()
             log_debug(f"Session {session_id}: Initializing plan: {plan_name}")
@@ -306,14 +308,14 @@ def main():
                     message=f"New plan initialized: **{plan_name}**\n\n"
                     f"Use TodoWrite to add tasks that will be tracked.\n"
                     f"Stop will be blocked until all tasks are completed.\n"
-                    f"Use `/clearplan` to remove the plan or `/showplan` to see status."
+                    f"Use `@clearplan` to remove the plan or `@showplan` to see status."
                 )
             else:
                 output_hook_response(True, message="Failed to initialize plan.")
             sys.exit(0)
 
-        # /clearplan
-        if prompt_lower in ["/clearplan", "/clear-plan", "/cleartasks"]:
+        # @clearplan
+        if prompt_lower in ["@clearplan", "@clear-plan", "@cleartasks"]:
             log_debug(f"Session {session_id}: Clearing plan")
             if clear_plan_state(plan_state_file):
                 output_hook_response(True, message="Plan cleared. Stop verification disabled.")
@@ -321,20 +323,20 @@ def main():
                 output_hook_response(True, message="Failed to clear plan.")
             sys.exit(0)
 
-        # /showplan
-        if prompt_lower in ["/showplan", "/show-plan", "/planstatus", "/plan-status"]:
+        # @showplan
+        if prompt_lower in ["@showplan", "@show-plan", "@planstatus", "@plan-status"]:
             log_debug(f"Session {session_id}: Showing plan status")
             plan_state = load_plan_state(plan_state_file)
             summary = get_plan_summary(plan_state)
             output_hook_response(True, message=summary)
             sys.exit(0)
 
-        # /continue or /continuations - list or continue from a previous session
-        if prompt_lower.startswith("/continue") or prompt_lower == "/continuations":
+        # @continue or @continuations - list or continue from a previous session
+        if prompt_lower.startswith("@continue") or prompt_lower == "@continuations":
             parts = prompt.split()
 
             if len(parts) == 1:
-                # Just /continue or /continuations - list available continuations
+                # Just @continue or @continuations - list available continuations
                 log_debug(f"Session {session_id}: Listing available continuations")
                 continuations = get_available_continuations()
                 msg = format_continuations_message(continuations)
@@ -342,7 +344,7 @@ def main():
                 sys.exit(0)
 
             else:
-                # /continue {session_id_prefix} - continue from specific session
+                # @continue {session_id_prefix} - continue from specific session
                 session_prefix = parts[1].strip()
                 log_debug(f"Session {session_id}: Attempting to continue session {session_prefix}")
 
@@ -352,7 +354,7 @@ def main():
                     output_hook_response(
                         True,
                         message=f"No continuation found for session prefix: `{session_prefix}`\n\n"
-                        f"Use `/continue` to see available continuations."
+                        f"Use `@continue` to see available continuations."
                     )
                     sys.exit(0)
 
@@ -377,7 +379,7 @@ def main():
 
                     msg += "\n---\n"
                     msg += "Plan state loaded. Stop verification is now active.\n"
-                    msg += "Complete remaining tasks or use `/clearplan` to start fresh."
+                    msg += "Complete remaining tasks or use `@clearplan` to start fresh."
 
                     # Remove the continuation file since we're continuing from it
                     remove_continuation_file(cont_file)

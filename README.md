@@ -4,13 +4,13 @@ Ralph-style autonomous development hooks for Claude Code with stop blocking, cod
 
 ## Features
 
-- **Plan Commands** - `/plan`, `/showplan`, `/clearplan`
-- **Multi-Session Continuation** - `/continue` to resume incomplete sessions
+- **Plan Commands** - `@plan`, `@showplan`, `@clearplan`
+- **Multi-Session Continuation** - `@continue` to resume incomplete sessions
 - **Session Dashboard** - Web UI to monitor all sessions at `http://localhost:8765`
 - **Auto-sync** - TodoWrite completions sync to plan (smart keyword matching)
 - **Stop Blocking** - Prevents stopping until all tasks complete
 - **Loop Prevention** - Allows stop after configurable blocked attempts (default: 5)
-- **Force Stop** - Say "force stop" to bypass blocking
+- **Force Stop** - Say "force stop" or `@force-stop` to bypass blocking
 - **Autonomous Operation** - Auto-continue script for tmux sessions
 - **Code Validation** - Runs TypeScript, lint, and build checks
 - **Session Archiving** - Archives completed plans with daily progress logs
@@ -43,12 +43,14 @@ git clone https://github.com/norvinteo/claude-code-hooks.git
 After installation, use these commands in Claude Code:
 
 ```
-/plan Fix the login page bug    # Start a new plan
-/showplan                        # Show current plan status
-/clearplan                       # Clear the plan
-/continue                        # List available continuations
-/continue abc12345               # Continue from session starting with abc12345
+@plan Fix the login page bug    # Start a new plan
+@showplan                        # Show current plan status
+@clearplan                       # Clear the plan
+@continue                        # List available continuations
+@continue abc12345               # Continue from session starting with abc12345
 ```
+
+**Note:** Commands use `@` prefix to avoid conflicts with Claude Code's skill system (`/`) and bash history (`!`).
 
 Claude will:
 - Track tasks via TodoWrite
@@ -62,7 +64,7 @@ Claude will:
 
 When you create a plan, Claude Code cannot stop until all tasks are completed:
 
-1. User types `/plan Fix authentication bug`
+1. User types `@plan Fix authentication bug`
 2. Claude creates plan items via TodoWrite
 3. When Claude tries to stop, `stop_verifier.py` checks for incomplete items
 4. If incomplete → Block stop and prompt continuation
@@ -93,7 +95,7 @@ To prevent infinite loops, stop is allowed after a configurable number of blocke
 ### Force Stop
 
 Say any of these to bypass stop blocking:
-- `/force-stop`
+- `@force-stop`
 - `force stop`
 - `stop anyway`
 - `ignore incomplete`
@@ -118,15 +120,15 @@ When a session ends with incomplete tasks, the state is automatically saved. New
 
 1. Session ends with incomplete tasks (or force stop)
 2. `session_cleanup.py` saves the continuation state to `.claude/continuations/`
-3. New session uses `/continue` to list available continuations
-4. `/continue <id>` loads the previous session's tasks
+3. New session uses `@continue` to list available continuations
+4. `@continue <id>` loads the previous session's tasks
 
 ### Commands
 
 ```
-/continue           # List all available continuations
-/continuations      # Alias for /continue
-/continue abc12345  # Continue from session starting with abc12345
+@continue           # List all available continuations
+@continuations      # Alias for @continue
+@continue abc12345  # Continue from session starting with abc12345
 ```
 
 ### Example Output
@@ -141,8 +143,8 @@ Previous sessions with incomplete tasks:
    Session: `abc12345...` | Saved: 2024-01-20T15:30
 
 ---
-To continue a session: `/continue {session_id_prefix}`
-Example: `/continue abc12345`
+To continue a session: `@continue {session_id_prefix}`
+Example: `@continue abc12345`
 ```
 
 ### Auto-Cleanup
@@ -525,7 +527,7 @@ cat progress/.notification_debug.log
 
 | Hook | Event | Purpose |
 |------|-------|--------|
-| `plan_initializer.py` | UserPromptSubmit | Handle /plan, /continue commands |
+| `plan_initializer.py` | UserPromptSubmit | Handle @plan, @continue commands |
 | `continuation_enforcer.py` | UserPromptSubmit | Reinforce continuation |
 | `inject_plan_context.py` | PreToolUse | Show plan progress |
 | `todo_sync.py` | PostToolUse (TodoWrite) | Sync todos to plan |
