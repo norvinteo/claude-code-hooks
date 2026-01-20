@@ -45,6 +45,71 @@ def log_debug(message: str):
         pass
 
 
+def task_to_active_form(task: str) -> str:
+    """Convert task description to present participle (activeForm) for TodoWrite."""
+    if not task:
+        return task
+
+    verb_mappings = {
+        "fix": "Fixing", "add": "Adding", "create": "Creating",
+        "update": "Updating", "run": "Running", "test": "Testing",
+        "deploy": "Deploying", "implement": "Implementing",
+        "modify": "Modifying", "remove": "Removing", "delete": "Deleting",
+        "refactor": "Refactoring", "write": "Writing", "read": "Reading",
+        "build": "Building", "configure": "Configuring", "check": "Checking",
+        "verify": "Verifying", "review": "Reviewing", "analyze": "Analyzing",
+        "debug": "Debugging", "optimize": "Optimizing", "install": "Installing",
+    }
+
+    words = task.split()
+    if not words:
+        return task
+
+    first_word = words[0].lower()
+    if first_word.endswith("ing"):
+        return task.capitalize() if task[0].islower() else task
+    if first_word in verb_mappings:
+        words[0] = verb_mappings[first_word]
+        return " ".join(words)
+    return task.capitalize() if task[0].islower() else task
+
+
+def format_todos_for_claude(items: list) -> str:
+    """Format plan items as TodoWrite-ready JSON instructions."""
+    if not items:
+        return ""
+
+    # Filter only actionable items
+    actionable = [i for i in items if i.get("actionable", True)]
+    if not actionable:
+        return ""
+
+    todos = []
+    for item in actionable:
+        task = item.get("task", item.get("content", ""))
+        status = item.get("status", "pending")
+        todo_status = "completed" if status in ["completed", "done"] else "pending"
+        active_form = task_to_active_form(task)
+        todos.append({
+            "content": task,
+            "status": todo_status,
+            "activeForm": active_form
+        })
+
+    msg = "\n\n---\n## Initialize TodoWrite\n"
+    msg += "**IMPORTANT:** Call `TodoWrite` immediately with these exact items:\n\n"
+    msg += "```json\n" + json.dumps(todos, indent=2) + "\n```\n"
+    return msg
+
+
+def output_hook_response(continue_execution: bool = True, message: str = None):
+    """Output JSON response for hook system."""
+    response = {"continue": continue_execution}
+    if message:
+        response["message"] = message
+    print(json.dumps(response))
+
+
 def is_plan_file(file_path: str) -> bool:
     """Check if the file is a plan file."""
     path = Path(file_path)
@@ -118,7 +183,7 @@ def parse_markdown_plan(content: str) -> dict:
 
     # ONLY parse checkbox items - [ ] or - [x] or * [ ] or * [x]
     # Also support - [~] for explicit non-actionable items
-    checkbox_pattern = r'^[-*]\s*\[([  xX~])\]\s*(.+)$'
+    checkbox_pattern = r'^[-*]\s*\[([ xX~])\]\s*(.+)$'
 
     # Track section headers for context
     header_pattern = r'^###?\s*(.+)$'
@@ -336,6 +401,20 @@ def main():
         # Process the plan file
         if process_plan_file(file_path, session_id, plan_state_file):
             log_debug(f"Successfully processed plan file: {file_path}")
+
+            # Load the saved plan state to get items
+            plan_state = load_plan_state(plan_state_file)
+            items = plan_state.get("items", [])
+
+            if items:
+                # Output TodoWrite-ready JSON
+                todo_msg = format_todos_for_claude(items)
+                if todo_msg:
+                    msg = f"## Plan Detected: {plan_state.get('name', 'Unnamed Plan')}\n\n"
+                    msg += f"**{len([i for i in items if i.get('actionable', True)])} actionable items** parsed from plan file.\n"
+                    msg += todo_msg
+                    output_hook_response(True, message=msg)
+                    sys.exit(0)
         else:
             log_debug(f"Failed to process plan file: {file_path}")
 
