@@ -15,9 +15,9 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-# Configuration
-HOOKS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/hooks")
-DEBUG_LOG = Path("/Users/norvin/Cursor/bebo-studio/progress/.inject_context_debug.log")
+# Configuration - paths relative to this script
+HOOKS_DIR = Path(__file__).parent
+DEBUG_LOG = HOOKS_DIR.parent.parent / "progress" / ".inject_context_debug.log"
 
 # Import shared helper for cross-session plan tracking
 try:

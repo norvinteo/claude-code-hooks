@@ -24,12 +24,12 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-# Configuration
-HOOKS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/hooks")
-CONTINUATIONS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/continuations")
-DEBUG_LOG = Path("/Users/norvin/Cursor/bebo-studio/progress/.plan_init_debug.log")
-PROJECT_ROOT = Path("/Users/norvin/Cursor/bebo-studio")
-PROJECT_NAME = PROJECT_ROOT.name  # "bebo-studio"
+# Configuration - paths relative to this script
+HOOKS_DIR = Path(__file__).parent
+CONTINUATIONS_DIR = HOOKS_DIR.parent / "continuations"
+DEBUG_LOG = HOOKS_DIR.parent.parent / "progress" / ".plan_init_debug.log"
+PROJECT_ROOT = HOOKS_DIR.parent.parent
+PROJECT_NAME = PROJECT_ROOT.name
 
 # Import shared helper
 try:
