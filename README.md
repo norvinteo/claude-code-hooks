@@ -5,13 +5,15 @@ Ralph-style autonomous development hooks for Claude Code with stop blocking, cod
 ## Features
 
 - **Plan Commands** - `/plan`, `/showplan`, `/clearplan`
+- **Multi-Session Continuation** - `/continue` to resume incomplete sessions
+- **Session Dashboard** - Web UI to monitor all sessions at `http://localhost:8765`
 - **Auto-sync** - TodoWrite completions sync to plan (smart keyword matching)
 - **Stop Blocking** - Prevents stopping until all tasks complete
 - **Loop Prevention** - Allows stop after configurable blocked attempts (default: 5)
 - **Force Stop** - Say "force stop" to bypass blocking
 - **Autonomous Operation** - Auto-continue script for tmux sessions
 - **Code Validation** - Runs TypeScript, lint, and build checks
-- **Session Archiving** - Archives completed plans
+- **Session Archiving** - Archives completed plans with daily progress logs
 - **Cost Tracking** - Tracks API usage per session
 - **Multi-channel Notifications** - Mac, Slack, Discord, Telegram, and more
 
@@ -44,6 +46,8 @@ After installation, use these commands in Claude Code:
 /plan Fix the login page bug    # Start a new plan
 /showplan                        # Show current plan status
 /clearplan                       # Clear the plan
+/continue                        # List available continuations
+/continue abc12345               # Continue from session starting with abc12345
 ```
 
 Claude will:
@@ -103,6 +107,76 @@ When all plan items are complete, the system runs:
 - Build verification
 
 If validation fails, new fix tasks are added to the plan.
+
+---
+
+## Multi-Session Continuation
+
+When a session ends with incomplete tasks, the state is automatically saved. New sessions can continue from where the previous session left off.
+
+### How It Works
+
+1. Session ends with incomplete tasks (or force stop)
+2. `session_cleanup.py` saves the continuation state to `.claude/continuations/`
+3. New session uses `/continue` to list available continuations
+4. `/continue <id>` loads the previous session's tasks
+
+### Commands
+
+```
+/continue           # List all available continuations
+/continuations      # Alias for /continue
+/continue abc12345  # Continue from session starting with abc12345
+```
+
+### Example Output
+
+```
+## Available Session Continuations
+
+Previous sessions with incomplete tasks:
+
+**1. Fix authentication bug**
+   Progress: 3/5 (2 remaining)
+   Session: `abc12345...` | Saved: 2024-01-20T15:30
+
+---
+To continue a session: `/continue {session_id_prefix}`
+Example: `/continue abc12345`
+```
+
+### Auto-Cleanup
+
+Continuation files older than 7 days are automatically removed during session cleanup.
+
+---
+
+## Session Dashboard
+
+A web-based dashboard to monitor and manage all Claude sessions.
+
+### Starting the Dashboard
+
+```bash
+python3 .claude/hooks/dashboard.py
+```
+
+Opens: `http://localhost:8765`
+
+### Features
+
+- **Session Overview** - View all active plan sessions with progress
+- **Cost Tracking** - See accumulated costs per session
+- **Task Progress** - Visual progress bars and task lists
+- **Session Management** - Clear individual sessions or all at once
+- **Auto-Refresh** - Updates every 5 seconds (toggleable)
+
+### Dashboard Stats
+
+- Total plan sessions
+- Completed tasks count
+- Total API cost
+- Total tokens used
 
 ---
 
@@ -451,7 +525,7 @@ cat progress/.notification_debug.log
 
 | Hook | Event | Purpose |
 |------|-------|--------|
-| `plan_initializer.py` | UserPromptSubmit | Handle /plan commands |
+| `plan_initializer.py` | UserPromptSubmit | Handle /plan, /continue commands |
 | `continuation_enforcer.py` | UserPromptSubmit | Reinforce continuation |
 | `inject_plan_context.py` | PreToolUse | Show plan progress |
 | `todo_sync.py` | PostToolUse (TodoWrite) | Sync todos to plan |
@@ -460,8 +534,10 @@ cat progress/.notification_debug.log
 | `cost_tracker.py` | PostToolUse | Track API costs |
 | `stop_verifier.py` | Stop | Block until complete |
 | `completion_validator.py` | Stop | Run code checks |
-| `session_cleanup.py` | Stop | Archive and cleanup |
+| `session_cleanup.py` | Stop | Archive, save continuations, cleanup |
 | `agent_complete_notify.py` | SubagentStop | Send notifications |
+| `plan_session_helper.py` | Module | Shared utilities for session tracking |
+| `dashboard.py` | Standalone | Web dashboard for session monitoring |
 | `auto_continue.sh` | External | Auto-continue in tmux |
 
 ## Credits
