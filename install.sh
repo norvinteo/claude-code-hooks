@@ -63,6 +63,7 @@ HOOK_FILES=(
     "inject_plan_context.py"
     "stop_verifier.py"
     "completion_validator.py"
+    "ai_task_verifier.py"
     "session_cleanup.py"
     "continuation_enforcer.py"
     "cost_tracker.py"
@@ -227,6 +228,14 @@ cat > "$TARGET_SETTINGS" << EOF
           {
             "type": "command",
             "command": "python3 $TARGET_HOOKS/completion_validator.py"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $TARGET_HOOKS/ai_task_verifier.py"
           }
         ]
       },

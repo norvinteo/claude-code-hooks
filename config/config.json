@@ -6,6 +6,10 @@
   "cost_warning_threshold": 0.8,
   "max_stop_attempts": 5,
   "archive_old_plans": true,
+  "ai_verification": false,
+  "ai_verification_model": "haiku",
+  "ai_verification_threshold": 70,
+  "ai_verification_sample_rate": 1.0,
   "notifications": {
     "mac": true,
     "terminal_bell": true,

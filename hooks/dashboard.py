@@ -2,8 +2,13 @@
 """
 Session Progress Dashboard - View and manage Claude Code hook session data.
 
-Usage: python3 .claude/hooks/dashboard.py
-Opens: http://localhost:8765
+Usage:
+  python3 .claude/hooks/dashboard.py                    # Default port 8765
+  python3 .claude/hooks/dashboard.py --port 8766       # Custom port via CLI
+  python3 .claude/hooks/dashboard.py -p 8766           # Short form
+  DASHBOARD_PORT=8766 python3 .claude/hooks/dashboard.py  # Via env var
+
+Port Priority: CLI argument > Environment variable > Default (8765)
 
 Features:
 - Display all sessions with their plan state
@@ -13,6 +18,7 @@ Features:
 - Auto-refresh capability (5s interval)
 """
 
+import argparse
 import json
 import os
 from datetime import datetime
@@ -20,8 +26,38 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+
+def get_port() -> int:
+    """Get port from CLI args, environment variable, or default.
+
+    Priority: CLI argument > Environment variable > Default (8765)
+    """
+    parser = argparse.ArgumentParser(
+        description="Claude Session Dashboard",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                    # Run on default port 8765
+  %(prog)s --port 8766       # Run on port 8766
+  %(prog)s -p 8767           # Run on port 8767
+  DASHBOARD_PORT=8768 %(prog)s  # Use environment variable
+        """
+    )
+    parser.add_argument(
+        "--port", "-p",
+        type=int,
+        metavar="PORT",
+        help="Port number (default: 8765)"
+    )
+    args, _ = parser.parse_known_args()
+
+    if args.port:
+        return args.port
+    return int(os.environ.get("DASHBOARD_PORT", "8765"))
+
+
 # Configuration
-PORT = 8765
+PORT = get_port()
 HOOKS_DIR = Path(__file__).parent
 SESSIONS_DIR = HOOKS_DIR / "sessions"
 PROJECT_ROOT = HOOKS_DIR.parent.parent  # .claude/hooks -> .claude -> project
