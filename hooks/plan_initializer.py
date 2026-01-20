@@ -501,6 +501,40 @@ def main():
 
                 sys.exit(0)
 
+        # Handle single "c" to continue after stop block
+        if prompt_lower == "c":
+            log_debug(f"Session {session_id}: User typed 'c' to continue")
+            plan_state = load_plan_state(plan_state_file)
+
+            if not plan_state or not plan_state.get("items"):
+                output_hook_response(True, message="No active plan. Starting fresh.")
+                sys.exit(0)
+
+            # Find next incomplete task
+            items = plan_state.get("items", [])
+            remaining = [i for i in items if i.get("status") not in ["completed", "done"]]
+
+            if not remaining:
+                output_hook_response(True, message="✅ All tasks completed!")
+                sys.exit(0)
+
+            # Get next task to work on
+            next_task = remaining[0].get("task", remaining[0].get("content", "Unknown task"))
+            completed_count = len(items) - len(remaining)
+
+            msg = f"## Continuing Plan: {plan_state.get('name', 'Current Plan')}\n\n"
+            msg += f"**Progress:** {completed_count}/{len(items)} completed\n\n"
+            msg += f"**Next task:** {next_task}\n\n"
+            msg += "---\n"
+            msg += "Proceed with the next task."
+
+            # Add TodoWrite-ready JSON for sync
+            todo_msg = format_todos_for_claude(remaining)
+            msg += todo_msg
+
+            output_hook_response(True, message=msg)
+            sys.exit(0)
+
         # No plan command - just continue normally
         output_hook_response(True)
 
