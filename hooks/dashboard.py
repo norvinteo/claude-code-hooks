@@ -24,13 +24,15 @@ from urllib.parse import urlparse, parse_qs
 PORT = 8765
 HOOKS_DIR = Path(__file__).parent
 SESSIONS_DIR = HOOKS_DIR / "sessions"
+PROJECT_ROOT = HOOKS_DIR.parent.parent  # .claude/hooks -> .claude -> project
+PROJECT_NAME = PROJECT_ROOT.name
 
-HTML_TEMPLATE = """<!DOCTYPE html>
+HTML_TEMPLATE = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Claude Session Dashboard</title>
+    <title>Dashboard - {PROJECT_NAME}</title>
     <style>
         * {
             box-sizing: border-box;
@@ -402,7 +404,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
     <div class="header">
         <h1>Claude Session Dashboard</h1>
-        <p class="subtitle">Monitor and manage Claude Code hook sessions</p>
+        <p class="subtitle">{PROJECT_ROOT}</p>
     </div>
 
     <div class="controls">
@@ -826,7 +828,9 @@ def main():
 ============================================================
            Claude Session Progress Dashboard
 ============================================================
-  Server running at: http://localhost:{PORT}
+  Project: {PROJECT_NAME}
+  Path:    {PROJECT_ROOT}
+  Server:  http://localhost:{PORT}
   Press Ctrl+C to stop
 ============================================================
 """)
