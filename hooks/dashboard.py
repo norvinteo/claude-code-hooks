@@ -27,12 +27,12 @@ SESSIONS_DIR = HOOKS_DIR / "sessions"
 PROJECT_ROOT = HOOKS_DIR.parent.parent  # .claude/hooks -> .claude -> project
 PROJECT_NAME = PROJECT_ROOT.name
 
-HTML_TEMPLATE = f"""<!DOCTYPE html>
+HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - {PROJECT_NAME}</title>
+    <title>Dashboard - __PROJECT_NAME__</title>
     <style>
         * {
             box-sizing: border-box;
@@ -404,7 +404,7 @@ HTML_TEMPLATE = f"""<!DOCTYPE html>
 <body>
     <div class="header">
         <h1>Claude Session Dashboard</h1>
-        <p class="subtitle">{PROJECT_ROOT}</p>
+        <p class="subtitle">__PROJECT_ROOT__</p>
     </div>
 
     <div class="controls">
@@ -774,7 +774,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/" or path == "/index.html":
-            self.send_html(HTML_TEMPLATE)
+            html = HTML_TEMPLATE.replace("__PROJECT_NAME__", PROJECT_NAME).replace("__PROJECT_ROOT__", str(PROJECT_ROOT))
+            self.send_html(html)
 
         elif path == "/api/sessions":
             sessions = load_sessions()
