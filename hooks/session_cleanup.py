@@ -426,7 +426,7 @@ def main():
 
             if incomplete > 0:
                 msg += f"\n\nContinuation saved with {incomplete} pending tasks."
-                msg += f"\nNew sessions can continue with: `/continue {session_id[:8]}`"
+                msg += f"\nNew sessions can continue with: `@continue {session_id[:8]}`"
 
             output_hook_response(True, msg)
         else:
