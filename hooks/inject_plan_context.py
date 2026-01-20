@@ -16,8 +16,15 @@ from datetime import datetime
 from pathlib import Path
 
 # Configuration
-HOOKS_DIR = Path(__file__).parent
-DEBUG_LOG = HOOKS_DIR.parent / "progress/.inject_context_debug.log"
+HOOKS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/hooks")
+DEBUG_LOG = Path("/Users/norvin/Cursor/bebo-studio/progress/.inject_context_debug.log")
+
+# Import shared helper for cross-session plan tracking
+try:
+    from plan_session_helper import load_plan_state_with_fallback
+    HAS_HELPER = True
+except ImportError:
+    HAS_HELPER = False
 
 
 def get_session_files(session_id: str) -> tuple:
@@ -116,6 +123,47 @@ def get_plan_summary(plan_state: dict) -> str:
     return "\n".join(summary_parts)
 
 
+def get_pending_items_for_sync(plan_state: dict) -> list:
+    """Get actionable pending items from plan state for TodoWrite sync."""
+    if not plan_state:
+        return []
+
+    items = plan_state.get("items", [])
+    pending = []
+    for item in items:
+        status = item.get("status", "pending")
+        actionable = item.get("actionable", True)
+        if status not in ["completed", "done"] and actionable:
+            pending.append({
+                "task": item.get("task", ""),
+                "status": status,
+                "section": item.get("section", "")
+            })
+    return pending
+
+
+def format_todo_sync_message(pending_items: list) -> str:
+    """Format a message telling Claude to sync its TodoWrite with plan items."""
+    if not pending_items:
+        return ""
+
+    msg = "\n\n## 📝 Plan Items for TodoWrite\n"
+    msg += "When using TodoWrite, include these pending items from the active plan:\n\n"
+
+    current_section = None
+    for item in pending_items:
+        section = item.get("section", "")
+        if section and section != current_section:
+            msg += f"\n**{section}**\n"
+            current_section = section
+
+        status_icon = "🔄" if item["status"] == "in_progress" else "⬜"
+        msg += f"{status_icon} {item['task']}\n"
+
+    msg += "\nUse these exact task descriptions in your TodoWrite calls."
+    return msg
+
+
 def output_hook_response(continue_execution: bool = True, system_message: str = None):
     """Output JSON response for hook system."""
     response = {"continue": continue_execution}
@@ -143,11 +191,14 @@ def main():
         session_id = data.get("session_id", "default")
         log_debug(f"PreToolUse for {tool_name}")
 
-        # Get session-scoped file paths
-        plan_state_file, _ = get_session_files(session_id)
-
-        # Load plan state
-        plan_state = load_plan_state(plan_state_file)
+        # Load plan state with fallback to active plan from other sessions
+        if HAS_HELPER:
+            plan_state, plan_state_file, is_fallback = load_plan_state_with_fallback(session_id)
+            if is_fallback:
+                log_debug(f"Using fallback plan from {plan_state.get('session_id') if plan_state else 'unknown'}")
+        else:
+            plan_state_file, _ = get_session_files(session_id)
+            plan_state = load_plan_state(plan_state_file)
 
         if not plan_state or not plan_state.get("items"):
             output_hook_response(True)
@@ -157,8 +208,13 @@ def main():
         summary = get_plan_summary(plan_state)
 
         if summary:
-            log_debug(f"Injecting context: {summary[:100]}...")
-            output_hook_response(True, summary)
+            # Add pending items for TodoWrite sync
+            pending_items = get_pending_items_for_sync(plan_state)
+            sync_msg = format_todo_sync_message(pending_items)
+            full_message = summary + sync_msg
+
+            log_debug(f"Injecting context with {len(pending_items)} pending items")
+            output_hook_response(True, full_message)
         else:
             output_hook_response(True)
 

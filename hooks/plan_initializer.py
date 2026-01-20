@@ -24,10 +24,12 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-# Configuration - paths relative to this script
-HOOKS_DIR = Path(__file__).parent
-CONTINUATIONS_DIR = HOOKS_DIR.parent / "continuations"
-DEBUG_LOG = HOOKS_DIR.parent.parent / "progress" / ".plan_init_debug.log"
+# Configuration
+HOOKS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/hooks")
+CONTINUATIONS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/continuations")
+DEBUG_LOG = Path("/Users/norvin/Cursor/bebo-studio/progress/.plan_init_debug.log")
+PROJECT_ROOT = Path("/Users/norvin/Cursor/bebo-studio")
+PROJECT_NAME = PROJECT_ROOT.name  # "bebo-studio"
 
 # Import shared helper
 try:
@@ -113,14 +115,14 @@ def get_plan_summary(plan_state: dict) -> str:
     name = plan_state.get("name", "Unnamed Plan")
 
     if not items:
-        return f"Plan: {name}\nNo items yet. Use TodoWrite to add tasks."
+        return f"📋 Plan: {name}\nNo items yet. Use TodoWrite to add tasks."
 
     completed = sum(1 for i in items if i.get("status") in ["completed", "done"])
     total = len(items)
     progress_pct = (completed / total) * 100 if total else 0
 
     summary = [
-        f"Plan: {name}",
+        f"📋 Plan: {name}",
         f"Progress: {completed}/{total} ({progress_pct:.0f}%)",
         "",
         "Items:"
@@ -130,11 +132,11 @@ def get_plan_summary(plan_state: dict) -> str:
         status = item.get("status", "pending")
         task = item.get("task", "Unknown")
         if status in ["completed", "done"]:
-            summary.append(f"  [x] {i}. {task}")
+            summary.append(f"  ✅ {i}. {task}")
         elif status == "in_progress":
-            summary.append(f"  [>] {i}. {task}")
+            summary.append(f"  🔄 {i}. {task}")
         else:
-            summary.append(f"  [ ] {i}. {task}")
+            summary.append(f"  ⬜ {i}. {task}")
 
     return "\n".join(summary)
 
@@ -221,6 +223,7 @@ def copy_continuation_to_session(continuation: dict, session_id: str, plan_state
         # Create new plan state from continuation
         plan_state = {
             "session_id": session_id,
+            "project_name": PROJECT_NAME,
             "plan_source": "continuation",
             "plan_file": continuation.get("plan_file"),
             "name": continuation.get("plan_name", "Continued Plan"),
@@ -280,7 +283,7 @@ def main():
 
         log_debug(f"Session {session_id}: Received prompt: {prompt[:100]}...")
 
-        # Check for plan commands (using @ prefix)
+        # Check for plan commands
         prompt_lower = prompt.lower()
 
         # @plan <name> or @newplan <name>
@@ -291,6 +294,7 @@ def main():
 
             plan_state = {
                 "session_id": session_id,
+                "project_name": PROJECT_NAME,
                 "plan_source": "command",
                 "plan_file": None,
                 "name": plan_name,
@@ -305,22 +309,22 @@ def main():
             if save_plan_state(plan_state, plan_state_file):
                 output_hook_response(
                     True,
-                    message=f"New plan initialized: **{plan_name}**\n\n"
+                    message=f"📋 New plan initialized: **{plan_name}**\n\n"
                     f"Use TodoWrite to add tasks that will be tracked.\n"
                     f"Stop will be blocked until all tasks are completed.\n"
                     f"Use `@clearplan` to remove the plan or `@showplan` to see status."
                 )
             else:
-                output_hook_response(True, message="Failed to initialize plan.")
+                output_hook_response(True, message="❌ Failed to initialize plan.")
             sys.exit(0)
 
         # @clearplan
         if prompt_lower in ["@clearplan", "@clear-plan", "@cleartasks"]:
             log_debug(f"Session {session_id}: Clearing plan")
             if clear_plan_state(plan_state_file):
-                output_hook_response(True, message="Plan cleared. Stop verification disabled.")
+                output_hook_response(True, message="🗑️ Plan cleared. Stop verification disabled.")
             else:
-                output_hook_response(True, message="Failed to clear plan.")
+                output_hook_response(True, message="❌ Failed to clear plan.")
             sys.exit(0)
 
         # @showplan
@@ -353,7 +357,7 @@ def main():
                 if not continuation:
                     output_hook_response(
                         True,
-                        message=f"No continuation found for session prefix: `{session_prefix}`\n\n"
+                        message=f"❌ No continuation found for session prefix: `{session_prefix}`\n\n"
                         f"Use `@continue` to see available continuations."
                     )
                     sys.exit(0)
@@ -374,7 +378,7 @@ def main():
                     for i, item in enumerate(remaining, 1):
                         task = item.get("task", item.get("content", "Unknown task"))
                         status = item.get("status", "pending")
-                        icon = "[>]" if status == "in_progress" else "[ ]"
+                        icon = "🔄" if status == "in_progress" else "⬜"
                         msg += f"{i}. {icon} {task}\n"
 
                     msg += "\n---\n"
@@ -388,7 +392,7 @@ def main():
                 else:
                     output_hook_response(
                         True,
-                        message=f"Failed to load continuation from session `{session_prefix}`"
+                        message=f"❌ Failed to load continuation from session `{session_prefix}`"
                     )
 
                 sys.exit(0)
