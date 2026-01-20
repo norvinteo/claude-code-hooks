@@ -15,9 +15,9 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-# Configuration - paths relative to this script
-HOOKS_DIR = Path(__file__).parent
-DEBUG_LOG = HOOKS_DIR.parent.parent / "progress" / ".inject_context_debug.log"
+# Configuration
+HOOKS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/hooks")
+DEBUG_LOG = Path("/Users/norvin/Cursor/bebo-studio/progress/.inject_context_debug.log")
 
 # Import shared helper for cross-session plan tracking
 try:
@@ -142,25 +142,62 @@ def get_pending_items_for_sync(plan_state: dict) -> list:
     return pending
 
 
+def task_to_active_form(task: str) -> str:
+    """Convert task description to present participle (activeForm) for TodoWrite."""
+    if not task:
+        return task
+
+    verb_mappings = {
+        "fix": "Fixing", "add": "Adding", "create": "Creating", "update": "Updating",
+        "run": "Running", "test": "Testing", "deploy": "Deploying", "implement": "Implementing",
+        "modify": "Modifying", "remove": "Removing", "delete": "Deleting", "refactor": "Refactoring",
+        "write": "Writing", "read": "Reading", "build": "Building", "configure": "Configuring",
+        "setup": "Setting up", "set up": "Setting up", "check": "Checking", "verify": "Verifying",
+        "review": "Reviewing", "analyze": "Analyzing", "debug": "Debugging", "optimize": "Optimizing",
+        "install": "Installing", "migrate": "Migrating", "integrate": "Integrating",
+    }
+
+    words = task.split()
+    if not words:
+        return task
+
+    first_word = words[0].lower()
+    if first_word.endswith("ing"):
+        return task.capitalize() if task[0].islower() else task
+
+    if first_word in verb_mappings:
+        words[0] = verb_mappings[first_word]
+        return " ".join(words)
+
+    return task.capitalize() if task[0].islower() else task
+
+
 def format_todo_sync_message(pending_items: list) -> str:
-    """Format a message telling Claude to sync its TodoWrite with plan items."""
+    """Format pending plan items as TodoWrite-ready JSON for Claude to use."""
     if not pending_items:
         return ""
 
-    msg = "\n\n## 📝 Plan Items for TodoWrite\n"
-    msg += "When using TodoWrite, include these pending items from the active plan:\n\n"
-
-    current_section = None
+    todos = []
     for item in pending_items:
-        section = item.get("section", "")
-        if section and section != current_section:
-            msg += f"\n**{section}**\n"
-            current_section = section
+        task = item.get("task", "")
+        status = item.get("status", "pending")
 
-        status_icon = "🔄" if item["status"] == "in_progress" else "⬜"
-        msg += f"{status_icon} {item['task']}\n"
+        # Normalize status
+        if status == "in_progress":
+            todo_status = "in_progress"
+        else:
+            todo_status = "pending"
 
-    msg += "\nUse these exact task descriptions in your TodoWrite calls."
+        todos.append({
+            "content": task,
+            "status": todo_status,
+            "activeForm": task_to_active_form(task)
+        })
+
+    msg = "\n\n## 📝 Sync TodoWrite with Plan\n"
+    msg += "Use these exact items in your next TodoWrite call:\n\n"
+    msg += "```json\n" + json.dumps(todos, indent=2) + "\n```\n"
+    msg += "\n**Important:** Use these exact task descriptions to ensure proper plan sync."
     return msg
 
 
