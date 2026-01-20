@@ -8,8 +8,10 @@ Purpose: Check plan_state.json for incomplete items and BLOCK stop until done.
 Behavior:
 - If plan has incomplete items → BLOCK stop (continue=False)
 - If all items complete → Allow stop
-- If user uses /force-stop → Allow stop anyway
+- If user uses @force-stop → Allow stop anyway
 - If no plan → Allow stop
+
+Note: Uses @ prefix to avoid conflicts with Claude Code's skill system (/) and bash history (!).
 """
 
 import json
@@ -130,8 +132,8 @@ def check_force_stop(transcript_path: str) -> bool:
         recent_content = content[-5000:] if len(content) > 5000 else content
 
         force_patterns = [
-            r"/force-stop",
-            r"/force stop",
+            r"@force-stop",
+            r"@force stop",
             r"force stop",
             r"stop anyway",
             r"ignore incomplete",
@@ -283,7 +285,7 @@ Remaining items:
 
 👉 NEXT TASK: "{next_task}"
 
-Type "c" to continue, or "force stop" to stop anyway."""
+Type "c" to continue, or "@force-stop" to stop anyway."""
 
         # BLOCK the stop and prompt continuation
         output_hook_response(False, system_msg)
