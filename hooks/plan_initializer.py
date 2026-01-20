@@ -24,12 +24,12 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-# Configuration - paths relative to this script
-HOOKS_DIR = Path(__file__).parent
-CONTINUATIONS_DIR = HOOKS_DIR.parent / "continuations"
-DEBUG_LOG = HOOKS_DIR.parent.parent / "progress" / ".plan_init_debug.log"
-PROJECT_ROOT = HOOKS_DIR.parent.parent
-PROJECT_NAME = PROJECT_ROOT.name
+# Configuration
+HOOKS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/hooks")
+CONTINUATIONS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/continuations")
+DEBUG_LOG = Path("/Users/norvin/Cursor/bebo-studio/progress/.plan_init_debug.log")
+PROJECT_ROOT = Path("/Users/norvin/Cursor/bebo-studio")
+PROJECT_NAME = PROJECT_ROOT.name  # "bebo-studio"
 
 # Import shared helper
 try:
@@ -104,6 +104,106 @@ def clear_plan_state(plan_state_file: Path) -> bool:
     except Exception as e:
         log_debug(f"Error clearing plan state: {e}")
         return False
+
+
+def task_to_active_form(task: str) -> str:
+    """Convert task description to present participle (activeForm) for TodoWrite.
+
+    Examples:
+        "Fix authentication bug" -> "Fixing authentication bug"
+        "Add new feature" -> "Adding new feature"
+        "Running tests" -> "Running tests" (already in -ing form)
+    """
+    if not task:
+        return task
+
+    # Common verbs that need -ing conversion
+    verb_mappings = {
+        "fix": "Fixing",
+        "add": "Adding",
+        "create": "Creating",
+        "update": "Updating",
+        "run": "Running",
+        "test": "Testing",
+        "deploy": "Deploying",
+        "implement": "Implementing",
+        "modify": "Modifying",
+        "remove": "Removing",
+        "delete": "Deleting",
+        "refactor": "Refactoring",
+        "write": "Writing",
+        "read": "Reading",
+        "build": "Building",
+        "configure": "Configuring",
+        "setup": "Setting up",
+        "set up": "Setting up",
+        "check": "Checking",
+        "verify": "Verifying",
+        "review": "Reviewing",
+        "analyze": "Analyzing",
+        "debug": "Debugging",
+        "optimize": "Optimizing",
+        "install": "Installing",
+        "migrate": "Migrating",
+        "integrate": "Integrating",
+    }
+
+    words = task.split()
+    if not words:
+        return task
+
+    first_word = words[0].lower()
+
+    # Check if already in -ing form
+    if first_word.endswith("ing"):
+        return task.capitalize() if task[0].islower() else task
+
+    # Try to convert using mapping
+    if first_word in verb_mappings:
+        words[0] = verb_mappings[first_word]
+        return " ".join(words)
+
+    # Fallback: just capitalize
+    return task.capitalize() if task[0].islower() else task
+
+
+def format_todos_for_claude(items: list) -> str:
+    """Format plan items as TodoWrite-ready JSON instructions.
+
+    This generates a JSON array that Claude can use directly with TodoWrite,
+    ensuring todos match the plan items exactly for proper sync.
+    """
+    if not items:
+        return ""
+
+    todos = []
+    for item in items:
+        task = item.get("task", item.get("content", ""))
+        status = item.get("status", "pending")
+
+        # Normalize status for TodoWrite
+        if status in ["completed", "done"]:
+            todo_status = "completed"
+        elif status == "in_progress":
+            todo_status = "in_progress"
+        else:
+            todo_status = "pending"
+
+        # Generate activeForm
+        active_form = task_to_active_form(task)
+
+        todos.append({
+            "content": task,
+            "status": todo_status,
+            "activeForm": active_form
+        })
+
+    msg = "\n\n---\n## 📝 Initialize TodoWrite\n"
+    msg += "**IMPORTANT:** Call `TodoWrite` immediately with these exact items to track progress:\n\n"
+    msg += "```json\n" + json.dumps(todos, indent=2) + "\n```\n\n"
+    msg += "This ensures your todos match the plan items for proper sync tracking.\n"
+    msg += "Mark items as `in_progress` when you start working on them."
+    return msg
 
 
 def get_plan_summary(plan_state: dict) -> str:
@@ -384,6 +484,10 @@ def main():
                     msg += "\n---\n"
                     msg += "Plan state loaded. Stop verification is now active.\n"
                     msg += "Complete remaining tasks or use `@clearplan` to start fresh."
+
+                    # Add TodoWrite-ready JSON for immediate initialization
+                    todo_msg = format_todos_for_claude(remaining)
+                    msg += todo_msg
 
                     # Remove the continuation file since we're continuing from it
                     remove_continuation_file(cont_file)
