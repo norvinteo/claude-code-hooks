@@ -13,6 +13,9 @@ Ralph-style autonomous development hooks for Claude Code with stop blocking, cod
 - **Force Stop** - Say "force stop" or `@force-stop` to bypass blocking
 - **Autonomous Operation** - Auto-continue script for tmux sessions
 - **Code Validation** - Runs TypeScript, lint, and build checks
+- **Evidence-Based Completion** - Verifies file changes before marking tasks done
+- **Task-Aware Editing** - Reminds Claude of current task before file edits
+- **Incremental Validation** - Quick validation after each task completion
 - **Session Archiving** - Archives completed plans with daily progress logs
 - **Cost Tracking** - Tracks API usage per session
 - **Multi-channel Notifications** - Mac, Slack, Discord, Telegram, and more
@@ -109,6 +112,68 @@ When all plan items are complete, the system runs:
 - Build verification
 
 If validation fails, new fix tasks are added to the plan.
+
+### Evidence-Based Completion
+
+The `completion_evidence_checker.py` hook verifies that actual work was done before allowing task completion:
+
+1. When Claude marks a task as completed via TodoWrite
+2. The hook checks `git diff` for file changes in the session
+3. Optionally runs quick TypeScript/lint check on changed files
+4. If no evidence of work → warns Claude to verify the task is actually done
+
+Configure in `config.json`:
+```json
+{
+  "evidence_checker_enabled": true,
+  "require_file_changes": false,
+  "quick_validate_changes": true
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `evidence_checker_enabled` | `true` | Enable evidence checking |
+| `require_file_changes` | `false` | Block completion if no file changes |
+| `quick_validate_changes` | `true` | Run quick lint/type check on changes |
+
+### Task-Aware Editing
+
+The `task_awareness.py` hook helps Claude stay focused on the current task:
+
+1. Before Claude edits a file, the hook checks if the file relates to the current task
+2. Uses keyword matching to detect relevance (task keywords vs file path keywords)
+3. If unrelated → injects a reminder of what the current task is
+4. Prevents drift to unrelated files mid-task
+
+Configure in `config.json`:
+```json
+{
+  "task_awareness_enabled": true,
+  "task_awareness_strict": false
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `task_awareness_enabled` | `true` | Enable task awareness reminders |
+| `task_awareness_strict` | `false` | Show reminder even for related files |
+
+### Incremental Validation
+
+The enhanced `todo_sync.py` hook now runs quick validation after each task completion:
+
+1. After TodoWrite marks a task complete
+2. Runs quick TypeScript check on recently changed files
+3. Tracks file changes per session for evidence checking
+4. Saves validation warnings for the stop verifier
+
+Configure in `config.json`:
+```json
+{
+  "incremental_validation": true
+}
+```
 
 ---
 
@@ -273,6 +338,12 @@ Edit `.claude/hooks/config.json`:
 | `cost_warning_threshold` | number | `0.8` | Warn at this percentage of max cost |
 | `max_stop_attempts` | number | `5` | Allow stop after N blocked attempts |
 | `archive_old_plans` | boolean | `true` | Archive completed plans |
+| `evidence_checker_enabled` | boolean | `true` | Verify file changes before task completion |
+| `require_file_changes` | boolean | `false` | Block completion if no file changes detected |
+| `quick_validate_changes` | boolean | `true` | Run quick lint/type check on changed files |
+| `task_awareness_enabled` | boolean | `true` | Remind Claude of current task before edits |
+| `task_awareness_strict` | boolean | `false` | Show reminder even for related files |
+| `incremental_validation` | boolean | `true` | Run validation after each task completion |
 | `notifications` | object | - | Enable/disable notification channels |
 | `validation_commands` | array | - | Commands to run on completion |
 
@@ -528,13 +599,15 @@ cat progress/.notification_debug.log
 | Hook | Event | Purpose |
 |------|-------|--------|
 | `plan_initializer.py` | UserPromptSubmit | Handle @plan, @continue commands |
-| `continuation_enforcer.py` | UserPromptSubmit | Reinforce continuation |
+| `continuation_enforcer.py` | UserPromptSubmit | Reinforce continuation, session resume |
 | `inject_plan_context.py` | PreToolUse | Show plan progress |
-| `todo_sync.py` | PostToolUse (TodoWrite) | Sync todos to plan |
+| `task_awareness.py` | PreToolUse (Write/Edit) | Remind of current task before edits |
+| `completion_evidence_checker.py` | PreToolUse (TodoWrite) | Verify file changes before completion |
+| `todo_sync.py` | PostToolUse (TodoWrite) | Sync todos to plan, incremental validation |
 | `plan_tracker.py` | PostToolUse (Write/Edit) | Parse plan files |
 | `task_monitor.py` | PostToolUse (Task) | Log task completion |
 | `cost_tracker.py` | PostToolUse | Track API costs |
-| `stop_verifier.py` | Stop | Block until complete |
+| `stop_verifier.py` | Stop | Block until complete, check evidence |
 | `completion_validator.py` | Stop | Run code checks |
 | `session_cleanup.py` | Stop | Archive, save continuations, cleanup |
 | `agent_complete_notify.py` | SubagentStop | Send notifications |

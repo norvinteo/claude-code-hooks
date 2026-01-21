@@ -14,6 +14,11 @@ Commands:
 - @continue <id>       - Continue from a previous session (use first 8 chars of session ID)
 - @continuations       - Alias for @continue
 
+Enhanced with:
+- Auto-detect active plan on new session start
+- Full plan context injection for session continuity
+- TodoWrite-ready JSON for immediate sync
+
 Note: Uses @ prefix to avoid conflicts with Claude Code's skill system (/) and bash history (!).
 """
 
@@ -24,17 +29,19 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-# Configuration
-HOOKS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/hooks")
-CONTINUATIONS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/continuations")
-DEBUG_LOG = Path("/Users/norvin/Cursor/bebo-studio/progress/.plan_init_debug.log")
-PROJECT_ROOT = Path("/Users/norvin/Cursor/bebo-studio")
-PROJECT_NAME = PROJECT_ROOT.name  # "bebo-studio"
+# Configuration - use relative paths for portability
+HOOKS_DIR = Path(__file__).parent
+PROJECT_ROOT = HOOKS_DIR.parent.parent  # .claude/hooks -> .claude -> project root
+CONTINUATIONS_DIR = PROJECT_ROOT / ".claude/continuations"
+DEBUG_LOG = PROJECT_ROOT / "progress/.plan_init_debug.log"
+PROJECT_NAME = PROJECT_ROOT.name
 
 # Import shared helper
 try:
-    from plan_session_helper import get_session_files, save_active_plan, clear_active_plan
+    from plan_session_helper import get_session_files, save_active_plan, clear_active_plan, load_active_plan
+    HAS_HELPER = True
 except ImportError:
+    HAS_HELPER = False
     # Fallback if helper not available
     def get_session_files(session_id: str) -> tuple:
         """Get session-scoped file paths."""
@@ -49,6 +56,9 @@ except ImportError:
 
     def clear_active_plan():
         pass
+
+    def load_active_plan():
+        return None
 
 
 def log_debug(message: str):
@@ -107,45 +117,18 @@ def clear_plan_state(plan_state_file: Path) -> bool:
 
 
 def task_to_active_form(task: str) -> str:
-    """Convert task description to present participle (activeForm) for TodoWrite.
-
-    Examples:
-        "Fix authentication bug" -> "Fixing authentication bug"
-        "Add new feature" -> "Adding new feature"
-        "Running tests" -> "Running tests" (already in -ing form)
-    """
+    """Convert task description to present participle (activeForm) for TodoWrite."""
     if not task:
         return task
 
-    # Common verbs that need -ing conversion
     verb_mappings = {
-        "fix": "Fixing",
-        "add": "Adding",
-        "create": "Creating",
-        "update": "Updating",
-        "run": "Running",
-        "test": "Testing",
-        "deploy": "Deploying",
-        "implement": "Implementing",
-        "modify": "Modifying",
-        "remove": "Removing",
-        "delete": "Deleting",
-        "refactor": "Refactoring",
-        "write": "Writing",
-        "read": "Reading",
-        "build": "Building",
-        "configure": "Configuring",
-        "setup": "Setting up",
-        "set up": "Setting up",
-        "check": "Checking",
-        "verify": "Verifying",
-        "review": "Reviewing",
-        "analyze": "Analyzing",
-        "debug": "Debugging",
-        "optimize": "Optimizing",
-        "install": "Installing",
-        "migrate": "Migrating",
-        "integrate": "Integrating",
+        "fix": "Fixing", "add": "Adding", "create": "Creating", "update": "Updating",
+        "run": "Running", "test": "Testing", "deploy": "Deploying", "implement": "Implementing",
+        "modify": "Modifying", "remove": "Removing", "delete": "Deleting", "refactor": "Refactoring",
+        "write": "Writing", "read": "Reading", "build": "Building", "configure": "Configuring",
+        "setup": "Setting up", "set up": "Setting up", "check": "Checking", "verify": "Verifying",
+        "review": "Reviewing", "analyze": "Analyzing", "debug": "Debugging", "optimize": "Optimizing",
+        "install": "Installing", "migrate": "Migrating", "integrate": "Integrating",
     }
 
     words = task.split()
@@ -168,11 +151,7 @@ def task_to_active_form(task: str) -> str:
 
 
 def format_todos_for_claude(items: list) -> str:
-    """Format plan items as TodoWrite-ready JSON instructions.
-
-    This generates a JSON array that Claude can use directly with TodoWrite,
-    ensuring todos match the plan items exactly for proper sync.
-    """
+    """Format plan items as TodoWrite-ready JSON instructions."""
     if not items:
         return ""
 
@@ -204,6 +183,102 @@ def format_todos_for_claude(items: list) -> str:
     msg += "This ensures your todos match the plan items for proper sync tracking.\n"
     msg += "Mark items as `in_progress` when you start working on them."
     return msg
+
+
+def format_full_plan_context_for_new_session(plan_state: dict) -> str:
+    """Generate FULL plan context for a new session inheriting an active plan."""
+    if not plan_state:
+        return None
+
+    items = plan_state.get("items", [])
+    if not items:
+        return None
+
+    plan_name = plan_state.get("name", "Current Plan")
+    actionable = [i for i in items if i.get("actionable") is not False]
+    completed_items = [i for i in actionable if i.get("status") in ["completed", "done"]]
+    incomplete_items = [i for i in actionable if i.get("status") not in ["completed", "done"]]
+
+    if not incomplete_items:
+        return None  # All done, no need to inject context
+
+    total = len(actionable)
+    completed = len(completed_items)
+
+    # Build the full context message
+    msg_parts = [
+        "## 📋 ACTIVE PLAN DETECTED",
+        "",
+        f"**Plan:** {plan_name}",
+        f"**Progress:** {completed}/{total} tasks complete",
+        ""
+    ]
+
+    # Show completed tasks (if any)
+    if completed_items:
+        msg_parts.append("### ✅ COMPLETED:")
+        for item in completed_items:
+            task = item.get("task", "Unknown")
+            msg_parts.append(f"- {task}")
+        msg_parts.append("")
+
+    # Show remaining tasks with START HERE marker
+    msg_parts.append("### ⏳ REMAINING (your current work):")
+    for i, item in enumerate(incomplete_items):
+        task = item.get("task", "Unknown")
+        status = item.get("status", "pending")
+        status_icon = "🔄" if status == "in_progress" else "[ ]"
+        start_marker = " ← **START HERE**" if i == 0 else ""
+        msg_parts.append(f"{i+1}. {status_icon} {task}{start_marker}")
+    msg_parts.append("")
+
+    # Add critical instruction
+    msg_parts.extend([
+        "---",
+        "⚠️ **DO NOT attempt to stop until all tasks are complete.**",
+        "",
+        "Use `@clearplan` if you want to start fresh, or continue with the remaining tasks.",
+        ""
+    ])
+
+    # Add TodoWrite-ready JSON for immediate sync
+    todos = []
+    for item in incomplete_items:
+        task = item.get("task", "")
+        status = item.get("status", "pending")
+        todos.append({
+            "content": task,
+            "status": "in_progress" if status == "in_progress" else "pending",
+            "activeForm": task_to_active_form(task)
+        })
+
+    msg_parts.extend([
+        "### 📝 Initialize TodoWrite",
+        "Call `TodoWrite` immediately with these items:",
+        "",
+        "```json",
+        json.dumps(todos, indent=2),
+        "```"
+    ])
+
+    return "\n".join(msg_parts)
+
+
+def check_session_first_prompt(session_id: str) -> bool:
+    """Check if this is the first prompt in a new session."""
+    sessions_dir = HOOKS_DIR / "sessions"
+    marker_file = sessions_dir / f"{session_id}_initialized.marker"
+
+    if marker_file.exists():
+        return False
+
+    # Create marker file
+    try:
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        marker_file.write_text(datetime.now().isoformat())
+        return True
+    except Exception:
+        return False
 
 
 def get_plan_summary(plan_state: dict) -> str:
@@ -385,6 +460,61 @@ def main():
 
         # Check for plan commands
         prompt_lower = prompt.lower()
+
+        # Check if this is a new session with an active plan (auto-detect)
+        is_plan_command = any([
+            prompt_lower.startswith("@plan"),
+            prompt_lower.startswith("@newplan"),
+            prompt_lower.startswith("@clearplan"),
+            prompt_lower.startswith("@showplan"),
+            prompt_lower.startswith("@continue"),
+            prompt_lower == "@continuations",
+            prompt_lower == "c",  # Continue shortcut
+        ])
+
+        if not is_plan_command and HAS_HELPER and check_session_first_prompt(session_id):
+            # This is the first prompt in a new session
+            # Check for active plan from helper
+            try:
+                active = load_active_plan()
+
+                if active and active.get("session_id"):
+                    # Load the plan state from the active plan's session
+                    active_session_id = active.get("session_id")
+                    active_plan_state_file = HOOKS_DIR / "sessions" / f"{active_session_id}_plan_state.json"
+
+                    if active_plan_state_file.exists():
+                        active_plan_state = json.loads(active_plan_state_file.read_text())
+
+                        # Check if it has incomplete items
+                        items = active_plan_state.get("items", [])
+                        actionable = [i for i in items if i.get("actionable") is not False]
+                        incomplete = [i for i in actionable if i.get("status") not in ["completed", "done"]]
+
+                        if incomplete:
+                            # Copy plan state to new session
+                            plan_state_file.parent.mkdir(parents=True, exist_ok=True)
+                            active_plan_state["session_id"] = session_id  # Update to new session
+                            active_plan_state["inherited_from"] = active_session_id
+                            active_plan_state["updated_at"] = datetime.now().isoformat()
+                            plan_state_file.write_text(json.dumps(active_plan_state, indent=2))
+
+                            # Update active plan reference to new session
+                            save_active_plan(
+                                session_id=session_id,
+                                plan_file=active_plan_state.get("plan_file"),
+                                name=active_plan_state.get("name")
+                            )
+
+                            # Generate full context message
+                            context_msg = format_full_plan_context_for_new_session(active_plan_state)
+
+                            if context_msg:
+                                log_debug(f"Session {session_id}: New session inheriting plan from {active_session_id}")
+                                output_hook_response(True, message=context_msg)
+                                sys.exit(0)
+            except Exception as e:
+                log_debug(f"Error checking active plan: {e}")
 
         # @plan <name> or @newplan <name>
         plan_match = re.match(r'^@(?:new)?plan\s+(.+)$', prompt, re.IGNORECASE)

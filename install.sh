@@ -63,6 +63,8 @@ HOOK_FILES=(
     "inject_plan_context.py"
     "stop_verifier.py"
     "completion_validator.py"
+    "completion_evidence_checker.py"
+    "task_awareness.py"
     "ai_task_verifier.py"
     "session_cleanup.py"
     "continuation_enforcer.py"
@@ -95,6 +97,12 @@ cat > "$TARGET_HOOKS/config.json" << 'EOF'
   "cost_warning_threshold": 0.8,
   "max_stop_attempts": 5,
   "archive_old_plans": true,
+  "evidence_checker_enabled": true,
+  "require_file_changes": false,
+  "quick_validate_changes": true,
+  "task_awareness_enabled": true,
+  "task_awareness_strict": false,
+  "incremental_validation": true,
   "notifications": {
     "mac": true,
     "terminal_bell": true,
@@ -172,6 +180,24 @@ cat > "$TARGET_SETTINGS" << EOF
           {
             "type": "command",
             "command": "python3 $TARGET_HOOKS/inject_plan_context.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $TARGET_HOOKS/task_awareness.py"
+          }
+        ]
+      },
+      {
+        "matcher": "TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $TARGET_HOOKS/completion_evidence_checker.py"
           }
         ]
       }

@@ -10,6 +10,10 @@ Behavior:
 - If all items complete → Allow stop
 - If user uses /force-stop → Allow stop anyway
 - If no plan → Allow stop
+
+Enhanced with:
+- Validation warnings check before allowing stop
+- Evidence of work check (file changes)
 """
 
 import json
@@ -19,10 +23,11 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-# Configuration
+# Configuration - use relative paths for portability
 HOOKS_DIR = Path(__file__).parent
-DEBUG_LOG = HOOKS_DIR.parent / "progress/.stop_verifier_debug.log"
-VERIFICATION_LOG = HOOKS_DIR.parent / "progress/plan_verifications.log"
+PROJECT_DIR = HOOKS_DIR.parent.parent  # .claude/hooks -> .claude -> project root
+DEBUG_LOG = PROJECT_DIR / "progress/.stop_verifier_debug.log"
+VERIFICATION_LOG = PROJECT_DIR / "progress/plan_verifications.log"
 
 # Loop prevention settings (can be overridden in config.json)
 DEFAULT_MAX_STOP_ATTEMPTS = 5
@@ -158,14 +163,7 @@ def check_force_stop(transcript_path: str) -> bool:
 
 
 def get_incomplete_items(plan_state: dict) -> list:
-    """Get list of incomplete ACTIONABLE items from plan state.
-
-    Only returns items where:
-    - status is not "completed" or "done"
-    - actionable is not explicitly False (templates/categories are skipped)
-
-    This prevents template/category checkboxes from blocking the stop.
-    """
+    """Get list of incomplete ACTIONABLE items from plan state."""
     incomplete = []
 
     if not plan_state or "items" not in plan_state:
@@ -173,7 +171,6 @@ def get_incomplete_items(plan_state: dict) -> list:
 
     for item in plan_state["items"]:
         # Skip non-actionable items (templates, categories, reference items)
-        # Items without 'actionable' field default to True (actionable)
         if item.get("actionable") is False:
             continue
 
@@ -186,6 +183,61 @@ def get_incomplete_items(plan_state: dict) -> list:
             })
 
     return incomplete
+
+
+def check_validation_warnings(session_id: str) -> dict:
+    """Check for validation warnings saved by todo_sync.
+
+    Returns warning data if present, None otherwise.
+    """
+    warnings_file = HOOKS_DIR / "sessions" / f"{session_id}_warnings.json"
+
+    try:
+        if warnings_file.exists():
+            data = json.loads(warnings_file.read_text())
+            # Clear the warnings file after reading
+            warnings_file.unlink()
+            return data
+    except Exception as e:
+        log_debug(f"Error reading warnings: {e}")
+
+    return None
+
+
+def check_evidence_of_work(session_id: str) -> tuple:
+    """Check if there's evidence of actual work done.
+
+    Returns:
+        tuple: (has_evidence: bool, files_changed: list)
+    """
+    try:
+        import subprocess
+
+        # Check git diff for changes
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            cwd=PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode == 0 and result.stdout.strip():
+            files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
+            return True, files
+
+        # Also check session file changes tracker
+        changes_file = HOOKS_DIR / "sessions" / f"{session_id}_file_changes.json"
+        if changes_file.exists():
+            data = json.loads(changes_file.read_text())
+            files = data.get("files", [])
+            if files:
+                return True, files
+
+    except Exception as e:
+        log_debug(f"Error checking evidence: {e}")
+
+    return False, []
 
 
 def output_hook_response(continue_execution: bool = True, system_message: str = None):
@@ -272,7 +324,31 @@ def main():
             log_debug("All items completed!")
             log_verification(f"Session {session_id}: All {total_items} plan items completed")
             clear_stop_attempts(stop_attempts_file)
-            output_hook_response(True, f"✅ All {total_items} plan items completed!")
+
+            # Check for validation warnings before allowing stop
+            warnings = check_validation_warnings(session_id)
+            if warnings:
+                errors = warnings.get("errors", [])
+                if errors:
+                    error_text = "\n".join([f"  - {e[:80]}" for e in errors[:5]])
+                    output_hook_response(
+                        True,  # Allow stop but show warning
+                        f"✅ All {total_items} plan items completed!\n\n"
+                        f"⚠️ **Note**: Validation warnings detected:\n{error_text}\n\n"
+                        f"The stop is allowed, but consider fixing these issues."
+                    )
+                    sys.exit(0)
+
+            # Check for evidence of work (informational only)
+            has_evidence, changed_files = check_evidence_of_work(session_id)
+            if has_evidence:
+                file_count = len(changed_files)
+                output_hook_response(
+                    True,
+                    f"✅ All {total_items} plan items completed! ({file_count} files modified)"
+                )
+            else:
+                output_hook_response(True, f"✅ All {total_items} plan items completed!")
             sys.exit(0)
 
         # Items are incomplete - BLOCK the stop

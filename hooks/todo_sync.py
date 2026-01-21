@@ -5,18 +5,25 @@ Todo Sync Hook - Syncs TodoWrite completions to plan_state.json.
 Triggers on: PostToolUse with matcher "TodoWrite"
 Purpose: Match completed todos to plan items using smart keyword matching
          (No API calls - works with Claude subscription)
+
+Enhanced with:
+- Incremental validation: Run quick lint/type check when tasks complete
+- File change tracking: Track which files were modified during the session
+- Early warning: Alert Claude to errors while context is fresh
 """
 
 import json
 import sys
 import os
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
-# Configuration
+# Configuration - use relative paths for portability
 HOOKS_DIR = Path(__file__).parent
-DEBUG_LOG = HOOKS_DIR.parent / "progress/.todo_sync_debug.log"
+PROJECT_DIR = HOOKS_DIR.parent.parent  # .claude/hooks -> .claude -> project root
+DEBUG_LOG = PROJECT_DIR / "progress/.todo_sync_debug.log"
 
 # Import shared helper for cross-session plan tracking
 try:
@@ -112,6 +119,114 @@ def save_plan_state(state: dict, plan_state_file: Path) -> bool:
     except Exception as e:
         log_debug(f"Error saving plan state: {e}")
         return False
+
+
+def get_recent_file_changes() -> list:
+    """Get list of recently modified files using git."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            cwd=PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode == 0 and result.stdout.strip():
+            return [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
+
+        # Also check staged changes
+        result_staged = subprocess.run(
+            ["git", "diff", "--name-only", "--cached"],
+            cwd=PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result_staged.returncode == 0 and result_staged.stdout.strip():
+            return [f.strip() for f in result_staged.stdout.strip().split("\n") if f.strip()]
+
+    except Exception as e:
+        log_debug(f"Error getting file changes: {e}")
+
+    return []
+
+
+def run_quick_validation(files: list) -> tuple:
+    """Run quick TypeScript check on recently changed files.
+
+    Returns:
+        tuple: (success: bool, errors: list)
+    """
+    if not files:
+        return True, []
+
+    # Filter to TypeScript/JavaScript files
+    ts_files = [f for f in files if f.endswith(('.ts', '.tsx', '.js', '.jsx'))]
+
+    if not ts_files:
+        return True, []
+
+    # Limit to 10 files
+    ts_files = ts_files[:10]
+
+    try:
+        # Quick type check
+        result = subprocess.run(
+            ["npx", "tsc", "--noEmit", "--pretty", "false"],
+            cwd=PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode == 0:
+            return True, []
+
+        # Extract error messages
+        errors = []
+        for line in (result.stdout + "\n" + result.stderr).split("\n"):
+            line = line.strip()
+            if "error TS" in line or ": error:" in line.lower():
+                errors.append(line[:150])
+                if len(errors) >= 5:
+                    break
+
+        return False, errors
+
+    except subprocess.TimeoutExpired:
+        log_debug("Quick validation timed out")
+        return True, []
+    except Exception as e:
+        log_debug(f"Error in quick validation: {e}")
+        return True, []
+
+
+def track_session_file_changes(session_id: str):
+    """Track file changes for this session."""
+    sessions_dir = HOOKS_DIR / "sessions"
+    changes_file = sessions_dir / f"{session_id}_file_changes.json"
+
+    try:
+        # Load existing tracked files
+        existing = set()
+        if changes_file.exists():
+            data = json.loads(changes_file.read_text())
+            existing = set(data.get("files", []))
+
+        # Get current git changes
+        current = set(get_recent_file_changes())
+
+        # Merge and save
+        all_files = existing | current
+        changes_file.write_text(json.dumps({
+            "files": list(all_files),
+            "updated_at": datetime.now().isoformat()
+        }, indent=2))
+
+    except Exception as e:
+        log_debug(f"Error tracking file changes: {e}")
 
 
 def stem_word(word: str) -> str:
@@ -349,6 +464,38 @@ def main():
             plan_state["items"] = plan_items
             save_plan_state(plan_state, plan_state_file)
             log_debug(f"Session {session_id}: Updated plan: {changes_made} changes made")
+
+            # Track file changes for this session
+            track_session_file_changes(session_id)
+
+            # Run incremental validation if tasks were completed
+            completed_count = sum(1 for t in todos if t.get("status") == "completed")
+            if completed_count > 0 and config.get("incremental_validation", True):
+                log_debug(f"Running incremental validation after {completed_count} task(s) completed")
+
+                changed_files = get_recent_file_changes()
+                if changed_files:
+                    success, errors = run_quick_validation(changed_files)
+
+                    if not success and errors:
+                        # Output warning (not blocking, just informative)
+                        error_text = "\n".join([f"  - {e}" for e in errors[:3]])
+                        warning_msg = (
+                            f"⚠️ **Validation Warning**: Task marked complete but errors detected:\n"
+                            f"{error_text}\n\n"
+                            f"Consider fixing these before continuing."
+                        )
+                        # Write to a session warning file for other hooks to pick up
+                        warnings_file = HOOKS_DIR / "sessions" / f"{session_id}_warnings.json"
+                        try:
+                            warnings_file.write_text(json.dumps({
+                                "message": warning_msg,
+                                "errors": errors,
+                                "timestamp": datetime.now().isoformat()
+                            }, indent=2))
+                        except Exception:
+                            pass
+                        log_debug(f"Validation found {len(errors)} errors after task completion")
         else:
             log_debug(f"Session {session_id}: No changes to plan")
 
