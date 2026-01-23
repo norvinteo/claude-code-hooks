@@ -14,11 +14,6 @@ Commands:
 - @continue <id>       - Continue from a previous session (use first 8 chars of session ID)
 - @continuations       - Alias for @continue
 
-Enhanced with:
-- Auto-detect active plan on new session start
-- Full plan context injection for session continuity
-- TodoWrite-ready JSON for immediate sync
-
 Note: Uses @ prefix to avoid conflicts with Claude Code's skill system (/) and bash history (!).
 """
 
@@ -29,19 +24,41 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-# Configuration - use relative paths for portability
-HOOKS_DIR = Path(__file__).parent
-PROJECT_ROOT = HOOKS_DIR.parent.parent  # .claude/hooks -> .claude -> project root
-CONTINUATIONS_DIR = PROJECT_ROOT / ".claude/continuations"
-DEBUG_LOG = PROJECT_ROOT / "progress/.plan_init_debug.log"
-PROJECT_NAME = PROJECT_ROOT.name
+# Configuration
+HOOKS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/hooks")
+CONTINUATIONS_DIR = Path("/Users/norvin/Cursor/bebo-studio/.claude/continuations")
+DEBUG_LOG = Path("/Users/norvin/Cursor/bebo-studio/progress/.plan_init_debug.log")
+PROJECT_ROOT = Path("/Users/norvin/Cursor/bebo-studio")
+PROJECT_NAME = PROJECT_ROOT.name  # "bebo-studio"
+
+# Import plan parsing functions from plan_tracker
+try:
+    from plan_tracker import parse_markdown_plan, parse_json_plan
+    HAS_PARSERS = True
+except ImportError:
+    HAS_PARSERS = False
+
+    def parse_markdown_plan(content: str) -> dict:
+        """Fallback - returns empty plan."""
+        return {"name": "Unknown", "items": [], "format": "markdown"}
+
+    def parse_json_plan(content: str) -> dict:
+        """Fallback - returns empty plan."""
+        try:
+            data = json.loads(content)
+            return {
+                "name": data.get("name", "Unknown"),
+                "items": data.get("items", []),
+                "format": "json"
+            }
+        except Exception:
+            return {"name": "Unknown", "items": [], "format": "json"}
+
 
 # Import shared helper
 try:
-    from plan_session_helper import get_session_files, save_active_plan, clear_active_plan, load_active_plan
-    HAS_HELPER = True
+    from plan_session_helper import get_session_files, save_active_plan, clear_active_plan
 except ImportError:
-    HAS_HELPER = False
     # Fallback if helper not available
     def get_session_files(session_id: str) -> tuple:
         """Get session-scoped file paths."""
@@ -56,9 +73,6 @@ except ImportError:
 
     def clear_active_plan():
         pass
-
-    def load_active_plan():
-        return None
 
 
 def log_debug(message: str):
@@ -117,18 +131,45 @@ def clear_plan_state(plan_state_file: Path) -> bool:
 
 
 def task_to_active_form(task: str) -> str:
-    """Convert task description to present participle (activeForm) for TodoWrite."""
+    """Convert task description to present participle (activeForm) for TodoWrite.
+
+    Examples:
+        "Fix authentication bug" -> "Fixing authentication bug"
+        "Add new feature" -> "Adding new feature"
+        "Running tests" -> "Running tests" (already in -ing form)
+    """
     if not task:
         return task
 
+    # Common verbs that need -ing conversion
     verb_mappings = {
-        "fix": "Fixing", "add": "Adding", "create": "Creating", "update": "Updating",
-        "run": "Running", "test": "Testing", "deploy": "Deploying", "implement": "Implementing",
-        "modify": "Modifying", "remove": "Removing", "delete": "Deleting", "refactor": "Refactoring",
-        "write": "Writing", "read": "Reading", "build": "Building", "configure": "Configuring",
-        "setup": "Setting up", "set up": "Setting up", "check": "Checking", "verify": "Verifying",
-        "review": "Reviewing", "analyze": "Analyzing", "debug": "Debugging", "optimize": "Optimizing",
-        "install": "Installing", "migrate": "Migrating", "integrate": "Integrating",
+        "fix": "Fixing",
+        "add": "Adding",
+        "create": "Creating",
+        "update": "Updating",
+        "run": "Running",
+        "test": "Testing",
+        "deploy": "Deploying",
+        "implement": "Implementing",
+        "modify": "Modifying",
+        "remove": "Removing",
+        "delete": "Deleting",
+        "refactor": "Refactoring",
+        "write": "Writing",
+        "read": "Reading",
+        "build": "Building",
+        "configure": "Configuring",
+        "setup": "Setting up",
+        "set up": "Setting up",
+        "check": "Checking",
+        "verify": "Verifying",
+        "review": "Reviewing",
+        "analyze": "Analyzing",
+        "debug": "Debugging",
+        "optimize": "Optimizing",
+        "install": "Installing",
+        "migrate": "Migrating",
+        "integrate": "Integrating",
     }
 
     words = task.split()
@@ -151,7 +192,11 @@ def task_to_active_form(task: str) -> str:
 
 
 def format_todos_for_claude(items: list) -> str:
-    """Format plan items as TodoWrite-ready JSON instructions."""
+    """Format plan items as TodoWrite-ready JSON instructions.
+
+    This generates a JSON array that Claude can use directly with TodoWrite,
+    ensuring todos match the plan items exactly for proper sync.
+    """
     if not items:
         return ""
 
@@ -183,102 +228,6 @@ def format_todos_for_claude(items: list) -> str:
     msg += "This ensures your todos match the plan items for proper sync tracking.\n"
     msg += "Mark items as `in_progress` when you start working on them."
     return msg
-
-
-def format_full_plan_context_for_new_session(plan_state: dict) -> str:
-    """Generate FULL plan context for a new session inheriting an active plan."""
-    if not plan_state:
-        return None
-
-    items = plan_state.get("items", [])
-    if not items:
-        return None
-
-    plan_name = plan_state.get("name", "Current Plan")
-    actionable = [i for i in items if i.get("actionable") is not False]
-    completed_items = [i for i in actionable if i.get("status") in ["completed", "done"]]
-    incomplete_items = [i for i in actionable if i.get("status") not in ["completed", "done"]]
-
-    if not incomplete_items:
-        return None  # All done, no need to inject context
-
-    total = len(actionable)
-    completed = len(completed_items)
-
-    # Build the full context message
-    msg_parts = [
-        "## 📋 ACTIVE PLAN DETECTED",
-        "",
-        f"**Plan:** {plan_name}",
-        f"**Progress:** {completed}/{total} tasks complete",
-        ""
-    ]
-
-    # Show completed tasks (if any)
-    if completed_items:
-        msg_parts.append("### ✅ COMPLETED:")
-        for item in completed_items:
-            task = item.get("task", "Unknown")
-            msg_parts.append(f"- {task}")
-        msg_parts.append("")
-
-    # Show remaining tasks with START HERE marker
-    msg_parts.append("### ⏳ REMAINING (your current work):")
-    for i, item in enumerate(incomplete_items):
-        task = item.get("task", "Unknown")
-        status = item.get("status", "pending")
-        status_icon = "🔄" if status == "in_progress" else "[ ]"
-        start_marker = " ← **START HERE**" if i == 0 else ""
-        msg_parts.append(f"{i+1}. {status_icon} {task}{start_marker}")
-    msg_parts.append("")
-
-    # Add critical instruction
-    msg_parts.extend([
-        "---",
-        "⚠️ **DO NOT attempt to stop until all tasks are complete.**",
-        "",
-        "Use `@clearplan` if you want to start fresh, or continue with the remaining tasks.",
-        ""
-    ])
-
-    # Add TodoWrite-ready JSON for immediate sync
-    todos = []
-    for item in incomplete_items:
-        task = item.get("task", "")
-        status = item.get("status", "pending")
-        todos.append({
-            "content": task,
-            "status": "in_progress" if status == "in_progress" else "pending",
-            "activeForm": task_to_active_form(task)
-        })
-
-    msg_parts.extend([
-        "### 📝 Initialize TodoWrite",
-        "Call `TodoWrite` immediately with these items:",
-        "",
-        "```json",
-        json.dumps(todos, indent=2),
-        "```"
-    ])
-
-    return "\n".join(msg_parts)
-
-
-def check_session_first_prompt(session_id: str) -> bool:
-    """Check if this is the first prompt in a new session."""
-    sessions_dir = HOOKS_DIR / "sessions"
-    marker_file = sessions_dir / f"{session_id}_initialized.marker"
-
-    if marker_file.exists():
-        return False
-
-    # Create marker file
-    try:
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        marker_file.write_text(datetime.now().isoformat())
-        return True
-    except Exception:
-        return False
 
 
 def get_plan_summary(plan_state: dict) -> str:
@@ -444,6 +393,176 @@ def remove_continuation_file(cont_file: Path):
         log_debug(f"Error removing continuation file: {e}")
 
 
+def format_full_plan_context_for_new_session(plan_state: dict) -> str:
+    """Generate FULL plan context for a new session inheriting an active plan.
+
+    This provides everything Claude needs to continue:
+    - Plan name and overall progress
+    - What's completed (for context)
+    - What remains (with START HERE marker)
+    - TodoWrite-ready JSON for immediate sync
+    """
+    if not plan_state:
+        return None
+
+    items = plan_state.get("items", [])
+    if not items:
+        return None
+
+    plan_name = plan_state.get("name", "Current Plan")
+    actionable = [i for i in items if i.get("actionable") is not False]
+    completed_items = [i for i in actionable if i.get("status") in ["completed", "done"]]
+    incomplete_items = [i for i in actionable if i.get("status") not in ["completed", "done"]]
+
+    if not incomplete_items:
+        return None  # All done, no need to inject context
+
+    total = len(actionable)
+    completed = len(completed_items)
+
+    # Build the full context message
+    msg_parts = [
+        "## 📋 ACTIVE PLAN DETECTED",
+        "",
+        f"**Plan:** {plan_name}",
+        f"**Progress:** {completed}/{total} tasks complete",
+        ""
+    ]
+
+    # Show completed tasks (if any)
+    if completed_items:
+        msg_parts.append("### ✅ COMPLETED:")
+        for item in completed_items:
+            task = item.get("task", "Unknown")
+            msg_parts.append(f"- {task}")
+        msg_parts.append("")
+
+    # Show remaining tasks with START HERE marker
+    msg_parts.append("### ⏳ REMAINING (your current work):")
+    for i, item in enumerate(incomplete_items):
+        task = item.get("task", "Unknown")
+        status = item.get("status", "pending")
+        status_icon = "🔄" if status == "in_progress" else "[ ]"
+        start_marker = " ← **START HERE**" if i == 0 else ""
+        msg_parts.append(f"{i+1}. {status_icon} {task}{start_marker}")
+    msg_parts.append("")
+
+    # Add critical instruction
+    msg_parts.extend([
+        "---",
+        "⚠️ **DO NOT attempt to stop until all tasks are complete.**",
+        "",
+        "Use `@clearplan` if you want to start fresh, or continue with the remaining tasks.",
+        ""
+    ])
+
+    # Add TodoWrite-ready JSON for immediate sync
+    todos = []
+    for item in incomplete_items:
+        task = item.get("task", "")
+        status = item.get("status", "pending")
+        todos.append({
+            "content": task,
+            "status": "in_progress" if status == "in_progress" else "pending",
+            "activeForm": task_to_active_form(task)
+        })
+
+    msg_parts.extend([
+        "### 📝 Initialize TodoWrite",
+        "Call `TodoWrite` immediately with these items:",
+        "",
+        "```json",
+        json.dumps(todos, indent=2),
+        "```"
+    ])
+
+    return "\n".join(msg_parts)
+
+
+def parse_plan_file_for_items(plan_file_path: str) -> list:
+    """Parse a plan file and extract items.
+
+    Args:
+        plan_file_path: Path to the plan file (can include ~ for home dir)
+
+    Returns:
+        List of plan items, or empty list if parsing fails
+    """
+    try:
+        # Expand ~ to home directory
+        path = Path(plan_file_path).expanduser()
+
+        if not path.exists():
+            log_debug(f"Plan file does not exist: {path}")
+            return []
+
+        content = path.read_text()
+
+        # Parse based on file extension
+        if path.suffix == ".json":
+            plan_data = parse_json_plan(content)
+        else:
+            plan_data = parse_markdown_plan(content)
+
+        if plan_data:
+            items = plan_data.get("items", [])
+            log_debug(f"Parsed {len(items)} items from {path.name}")
+            return items
+
+    except Exception as e:
+        log_debug(f"Error parsing plan file {plan_file_path}: {e}")
+
+    return []
+
+
+def extract_plan_file_from_prompt(prompt: str) -> str | None:
+    """Extract plan file path from a prompt that references one.
+
+    Looks for patterns like:
+    - "plan at /path/to/file.md"
+    - "plan file: /path/to/file.md"
+    - "~/.claude/plans/something.md"
+    - "/Users/.../plans/something.json"
+    - "tasks from ~/.claude/plans/..."
+    """
+    # Pattern to match plan file paths in prompts
+    patterns = [
+        r'plan (?:at|file:?)\s+([^\s]+\.(?:md|json))',  # "plan at /path/file.md"
+        r'(?:from|in)\s+([^\s]*\.claude/plans/[^\s]+\.(?:md|json))',  # "from ~/.claude/plans/..."
+        r'(~?/[^\s]*\.claude/plans/[^\s]+\.(?:md|json))',  # ~/.claude/plans/... or /.../plans/...
+        r'implement.*?([^\s]+/plans/[^\s]+\.(?:md|json))',  # implement ... plans/file.md
+        r'([^\s]+/plans/[a-zA-Z0-9_-]+\.(?:md|json))',  # Any /plans/file.md pattern
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, prompt, re.IGNORECASE)
+        if match:
+            plan_file = match.group(1)
+            log_debug(f"Extracted plan file from prompt: {plan_file}")
+            return plan_file
+
+    return None
+
+
+def check_session_first_prompt(session_id: str) -> bool:
+    """Check if this is the first prompt in a new session.
+
+    Uses a marker file to track if we've already processed this session.
+    """
+    sessions_dir = HOOKS_DIR / "sessions"
+    marker_file = sessions_dir / f"{session_id}_initialized.marker"
+
+    if marker_file.exists():
+        return False
+
+    # Create marker file
+    try:
+        marker_file.write_text(datetime.now().isoformat())
+        return True
+    except Exception:
+        return False
+
+
 def main():
     """Main entry point for the hook."""
     try:
@@ -461,7 +580,8 @@ def main():
         # Check for plan commands
         prompt_lower = prompt.lower()
 
-        # Check if this is a new session with an active plan (auto-detect)
+        # Check if this is a new session with an active plan
+        # Only do this if it's NOT a plan command (let commands handle themselves)
         is_plan_command = any([
             prompt_lower.startswith("@plan"),
             prompt_lower.startswith("@newplan"),
@@ -472,10 +592,11 @@ def main():
             prompt_lower == "c",  # Continue shortcut
         ])
 
-        if not is_plan_command and HAS_HELPER and check_session_first_prompt(session_id):
+        if not is_plan_command and check_session_first_prompt(session_id):
             # This is the first prompt in a new session
             # Check for active plan from helper
             try:
+                from plan_session_helper import load_active_plan
                 active = load_active_plan()
 
                 if active and active.get("session_id"):
@@ -488,6 +609,17 @@ def main():
 
                         # Check if it has incomplete items
                         items = active_plan_state.get("items", [])
+
+                        # FIX 6: If items are empty but plan_file exists, parse it now
+                        plan_file = active_plan_state.get("plan_file")
+                        if not items and plan_file:
+                            log_debug(f"Items empty but plan_file exists: {plan_file}, parsing...")
+                            parsed_items = parse_plan_file_for_items(plan_file)
+                            if parsed_items:
+                                items = parsed_items
+                                active_plan_state["items"] = items
+                                log_debug(f"Parsed {len(items)} items from plan file")
+
                         actionable = [i for i in items if i.get("actionable") is not False]
                         incomplete = [i for i in actionable if i.get("status") not in ["completed", "done"]]
 
@@ -513,8 +645,66 @@ def main():
                                 log_debug(f"Session {session_id}: New session inheriting plan from {active_session_id}")
                                 output_hook_response(True, message=context_msg)
                                 sys.exit(0)
+            except ImportError:
+                log_debug("plan_session_helper not available, skipping active plan check")
             except Exception as e:
                 log_debug(f"Error checking active plan: {e}")
+
+            # FIX 6: If no active plan was inherited, check if prompt references a plan file
+            if not plan_state_file.exists():
+                plan_file_in_prompt = extract_plan_file_from_prompt(prompt)
+                if plan_file_in_prompt:
+                    log_debug(f"Detected plan file in prompt: {plan_file_in_prompt}")
+                    parsed_items = parse_plan_file_for_items(plan_file_in_prompt)
+
+                    if parsed_items:
+                        # Expand path for storage
+                        expanded_path = str(Path(plan_file_in_prompt).expanduser())
+
+                        # Extract plan name from file
+                        try:
+                            content = Path(plan_file_in_prompt).expanduser().read_text()
+                            if plan_file_in_prompt.endswith(".json"):
+                                plan_data = parse_json_plan(content)
+                            else:
+                                plan_data = parse_markdown_plan(content)
+                            plan_name = plan_data.get("name", "Unnamed Plan") if plan_data else "Unnamed Plan"
+                        except Exception:
+                            plan_name = "Unnamed Plan"
+
+                        # Create new plan state with parsed items
+                        plan_state = {
+                            "session_id": session_id,
+                            "project_name": PROJECT_NAME,
+                            "plan_source": "prompt_detection",
+                            "plan_file": expanded_path,
+                            "name": plan_name,
+                            "description": "",
+                            "items": parsed_items,
+                            "verification": {},
+                            "format": "markdown" if plan_file_in_prompt.endswith(".md") else "json",
+                            "created_at": datetime.now().isoformat(),
+                            "updated_at": datetime.now().isoformat()
+                        }
+
+                        plan_state_file.parent.mkdir(parents=True, exist_ok=True)
+                        plan_state_file.write_text(json.dumps(plan_state, indent=2))
+
+                        # Update active plan reference
+                        save_active_plan(
+                            session_id=session_id,
+                            plan_file=expanded_path,
+                            name=plan_name
+                        )
+
+                        # Generate context message with TodoWrite JSON
+                        actionable = [i for i in parsed_items if i.get("actionable") is not False]
+                        context_msg = format_full_plan_context_for_new_session(plan_state)
+
+                        if context_msg:
+                            log_debug(f"Session {session_id}: Created plan state from prompt detection with {len(actionable)} actionable items")
+                            output_hook_response(True, message=context_msg)
+                            sys.exit(0)
 
         # @plan <name> or @newplan <name>
         plan_match = re.match(r'^@(?:new)?plan\s+(.+)$', prompt, re.IGNORECASE)
